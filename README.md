@@ -47,3 +47,9 @@ data/README.md                    数据清单（来源、数量、成功判据�
 1. BC：用 data/demos/sku09-original300 的 train/validation/test（240/30/30）split 训练绝对动作 BC；
 2. offline RL：在 BC 策略基础上用 demo（及后续收集的 rollout）做离线改进；
 3. online RL：在 env/logistics-sorting-sim 中在线微调，评估统一使用 `flip_pose_no_drop_v2`。
+
+## Stage-1 BC 入口（2026-10-09 新增）
+
+`train/bc_stage1/`：从 sku09-original300-absolute-bc 拷贝的 bc_epoch252 同配方训练器（仅改路径与开发评估采样器）。
+启动 `GPU=<id> bash train/bc_stage1/start.sh`，输出 `runs/bc_stage1/`，报告 `runs/bc_stage1/REPORT.md`。
+R3M 预训练权重需放在 `models/pretrained/r3m_resnet18.pt`（来自旧仓库 assets，SHA-256 b4dd6f40…36d2）。
