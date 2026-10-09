@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logistics-sorting-sim"
+version = "0.1.0"
+description = "Dual-PiPER MuJoCo parcel flipping and outfeed transport benchmark"
+requires-python = ">=3.10"
+dependencies = ["mujoco==3.13.0", "numpy>=1.24,<3", "Pillow>=10"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+logistics-sorting-demo = "logistics_sorting_sim.demo:main"
+
+[tool.setuptools]
+license-files = ["LICENSE.md", "third_party/agx_arm_urdf-LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+logistics_sorting_sim = ["*.xml", "configs/*.json", "assets/meshes/*.stl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

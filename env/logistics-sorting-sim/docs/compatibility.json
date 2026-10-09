@@ -1,0 +1,50 @@
+[
+  {
+    "sku": "SKU02",
+    "seed": 0,
+    "compared_ticks": 1063,
+    "reason": "success",
+    "physics_exact": true,
+    "rgb_exact": true
+  },
+  {
+    "sku": "SKU02",
+    "seed": 123,
+    "compared_ticks": 794,
+    "reason": "success",
+    "physics_exact": true,
+    "rgb_exact": true
+  },
+  {
+    "sku": "SKU02",
+    "seed": 26164001,
+    "compared_ticks": 1034,
+    "reason": "success",
+    "physics_exact": true,
+    "rgb_exact": true
+  },
+  {
+    "sku": "SKU09",
+    "seed": 0,
+    "compared_ticks": 1736,
+    "reason": null,
+    "physics_exact": true,
+    "rgb_exact": true
+  },
+  {
+    "sku": "SKU09",
+    "seed": 123,
+    "compared_ticks": 1736,
+    "reason": null,
+    "physics_exact": true,
+    "rgb_exact": true
+  },
+  {
+    "sku": "SKU09",
+    "seed": 26164001,
+    "compared_ticks": 1736,
+    "reason": null,
+    "physics_exact": true,
+    "rgb_exact": true
+  }
+]

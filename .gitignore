@@ -1,0 +1,10 @@
+data/demos/**/episodes/
+data/demos/**/*.zarr/
+*.h5
+*.zarr/
+*.pt
+*.ckpt
+*.pth
+runs/
+models/
+__pycache__/

@@ -1,0 +1,61 @@
+{
+  "repository": "https://github.com/agilexrobotics/agx_arm_urdf",
+  "revision": "f6642ce0d7872c686f29c99e9e10cd23d1d49313",
+  "assets": [
+    {
+      "file": "base_link.stl",
+      "sha256": "fd4a3d6d0266205fe3f725f048645be66592c23564db22e08b0807d5569b2c64",
+      "source": "piper/meshes/base_link.stl"
+    },
+    {
+      "file": "flange.stl",
+      "sha256": "f9ce752f93a6598858a779e3d8755a09e466b588efcffc3a1c3953773753a22b",
+      "source": "piper/meshes/flange.stl"
+    },
+    {
+      "file": "gripper_base.stl",
+      "sha256": "0b839dc0bcb7d94e3422c74f6396b54a0441ba4836448ab5586e7f372d1bdbf3",
+      "source": "piper/meshes/gripper_base.stl"
+    },
+    {
+      "file": "gripper_link1.stl",
+      "sha256": "475a7d8db056524d7659fadf5a2c307d62791047b6214d733dfc7846ed1c613d",
+      "source": "piper/meshes/gripper_link1.stl"
+    },
+    {
+      "file": "gripper_link2.stl",
+      "sha256": "3f88d534a85e28a33ef7d2061adacbd1d25214aa9325f9e464aad0f9e4b74606",
+      "source": "piper/meshes/gripper_link2.stl"
+    },
+    {
+      "file": "link1.stl",
+      "sha256": "9ee6e1d67c0241f42a0dbaf5c676d19230375ed078ee1943bb8c4c37ab303d14",
+      "source": "piper/meshes/link1.stl"
+    },
+    {
+      "file": "link2.stl",
+      "sha256": "0d37675b699b643f2e15348de99aed535fac10dc5f09a79b8e4b0acfaf4e0378",
+      "source": "piper/meshes/link2.stl"
+    },
+    {
+      "file": "link3.stl",
+      "sha256": "e8ae51f17c0c7f6d67b753922e2cc269f5e8372a65734f859231639a64fe8fad",
+      "source": "piper/meshes/link3.stl"
+    },
+    {
+      "file": "link4.stl",
+      "sha256": "efa33022976218f246f736a6133494b5d0e5486e8b50b52900c42f285ae85558",
+      "source": "piper/meshes/link4.stl"
+    },
+    {
+      "file": "link5.stl",
+      "sha256": "a1c69d1c7f6f8c60e2c82331c0f444725200ed4053d3e5ec23aa82cb5db5b29f",
+      "source": "piper/meshes/link5.stl"
+    },
+    {
+      "file": "link6.stl",
+      "sha256": "88374973bc3bd9e7389b5853cd6e555af9731c30b658b1ee6f85be34a126cb92",
+      "source": "piper/meshes/link6.stl"
+    }
+  ]
+}
