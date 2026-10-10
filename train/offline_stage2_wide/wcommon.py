@@ -30,20 +30,21 @@ def load_dataset_w(sources,device='cuda'):
     """sources: list of [kind,path]; kind 'demo' (dir with demo_{train,validation}.npz) or a rollout tag
     (dir searched recursively for ep_<seed>.npz). wide = rollout with |init| range >= 40 mm or yaw >= 10 deg
     (round-1 of the first Stage-2 was <= 40mm/20deg; all new wide collection is wide)."""
-    F=[];A=[];succ=[];held=[];src=[];seeds=[];wide=[]
+    F=[];A=[];succ=[];held=[];src=[];seeds=[];wide=[];nom=[]
     for kind,path in sources:
         if kind=='demo':
             for split in ['train','validation']:
                 z=np.load(Path(path)/f'demo_{split}.npz')
                 for e in range(len(z['success'])):
-                    F.append(z['feats'][e]);A.append(z['actions'][e]);succ.append(bool(z['success'][e]));held.append(split=='validation');src.append('demo');seeds.append(-1);wide.append(False)
+                    F.append(z['feats'][e]);A.append(z['actions'][e]);succ.append(bool(z['success'][e]));held.append(split=='validation');src.append('demo');seeds.append(-1);wide.append(False);nom.append(False)
         else:
             for f in sorted(glob.glob(str(Path(path)/'**'/'ep_*.npz'),recursive=True)):
                 if '.tmp.' in f:continue
                 z=np.load(f);meta=json.loads(str(z['meta']))
                 F.append(z['feats']);A.append(z['actions']);succ.append(bool(meta['success']));held.append(meta['seed']%10==0);src.append(kind);seeds.append(meta['seed'])
                 wide.append(bool(meta.get('wide',meta.get('position_half_range_m',0)>=.04 or meta.get('yaw_half_range_deg',0)>=10)))
+                nom.append(bool(meta.get('nominal',False)))  # v2: nominal-range (+-5mm/+-2deg) rollouts
     F=torch.tensor(np.stack(F),device=device,dtype=torch.float32);A=torch.tensor(np.stack(A),device=device,dtype=torch.float32)
-    succ=torch.tensor(succ,device=device,dtype=torch.float32);held=torch.tensor(held,device=device);wide=torch.tensor(wide,device=device)
+    succ=torch.tensor(succ,device=device,dtype=torch.float32);held=torch.tensor(held,device=device);wide=torch.tensor(wide,device=device);nom=torch.tensor(nom,device=device)
     R=torch.zeros(len(succ),CHUNKS,device=device);R[:,-1]=succ
-    return dict(F=F,A=A,AJ=joint_flat(A),R=R,success=succ,heldout=held,wide=wide,source=src,seeds=seeds,n=len(succ))
+    return dict(F=F,A=A,AJ=joint_flat(A),R=R,success=succ,heldout=held,wide=wide,nominal=nom,source=src,seeds=seeds,n=len(succ))
