@@ -9,7 +9,7 @@ import os,sys,json,time,argparse,math
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[1]
 OUT=Path(os.environ.get('SWEEP_OUT',str(ROOT/'runs/generalization_sweep')))
-CKPT=ROOT/'runs/bc_stage1/selected_development.pt'
+CKPT=Path(os.environ.get('SWEEP_CKPT',str(ROOT/'runs/bc_stage1/selected_development.pt')))
 SEED0=int(os.environ.get('SWEEP_SEED0','600000'));NEP=int(os.environ.get('SWEEP_NEP','100'));SHARD=int(os.environ.get('SWEEP_SHARD','25'))
 POS=[5,10,20,40,60,80];YAW=[2,5,10,20,30,45]
 PROBES=[('mass',.5),('mass',1.5),('mass',2.),('friction',.5),('friction',2.),('size',.9),('size',1.1),
