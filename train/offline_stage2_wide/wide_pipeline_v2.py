@@ -7,8 +7,8 @@ Round r (policy = current incumbent):
   -> PPO v2 (wide + nominal advantage states; KL anchor to STAGE-1 on demo + nominal states)
   -> real closed-loop gate per candidate on the SAME paired seeds as before:
        6 wide cells x 50 (620000-620049) + nominal 100 (880000-880099).
-PROMOTE iff  wide_delta_vs_incumbent >= MIN_DELTA (5)  AND  exact one-sided McNemar/sign p(better) < ALPHA (.05)
-        AND  nominal vs Stage-1 paired one-sided p(worse) >= ALPHA (no significant nominal drop).
+PROMOTE iff  wide_delta_vs_incumbent >= MIN_DELTA (5)  AND  exact one-sided McNemar/sign p(better) < ALPHA (.05).
+  Nominal (vs Stage-1 and vs incumbent, paired McNemar) is recorded/reported only (user decision 16:31 CST), unless --nominal-gate 1.
 Best passing = max wide (tie: max nominal). Starting incumbent = round-2 candidate (wide 229/300, reused v1 gate result).
 STOP when a round promotes nothing, or the promoted wide gain < MIN_DELTA, or after --rounds (5).
 Final: best policy (last promoted; else the starting incumbent, flagged) vs Stage-1 (and vs start) on held-out paired
@@ -23,6 +23,7 @@ ap.add_argument('--seed-base',type=int,default=650000)
 ap.add_argument('--ppo-steps',type=int,default=600);ap.add_argument('--iql-steps',type=int,default=100000);ap.add_argument('--lr',type=float,default=2e-6)
 ap.add_argument('--anchor',type=float,default=3.);ap.add_argument('--nom-batch',type=int,default=32)
 ap.add_argument('--min-delta',type=int,default=5);ap.add_argument('--alpha',type=float,default=.05)
+ap.add_argument('--nominal-gate',type=int,default=0,help='1 = also require nominal not significantly worse than Stage-1 (user decision 16:31 CST: OFF, report only)')
 ap.add_argument('--start-policy',default=str(ROOT/'runs/offline_stage2_wide/round2/ppo/cand_step0150.pt'))
 ap.add_argument('--v1-dir',default=str(ROOT/'runs/offline_stage2_wide'))
 ap.add_argument('--final-n',type=int,default=100);ap.add_argument('--final-sweep',type=int,default=1)
@@ -33,7 +34,10 @@ SH=25 if not SM else 4;GN=GATE_N if not SM else 2;NN=NOMINAL['n'] if not SM else
 assert OUT.resolve()!=V1.resolve(),'refusing to write into the v1 run dir'
 OUT.mkdir(parents=True,exist_ok=True);LOG=OUT/'pipeline.log';state_path=OUT/'pipeline_state.json'
 S=json.loads(state_path.read_text()) if state_path.exists() else dict(started=cst(),rounds={},current_policy=str(START),start_policy=str(START),promoted=[],durations={})
-S.update(pid=os.getpid(),gpus=GPUS,per_gpu=a.per_gpu,smoke=SM,planned_rounds=a.rounds,args=vars(a),std_max=STD_MAX)
+GATE_RULE=(f'PROMOTE iff wide >= incumbent+{a.min_delta} AND exact one-sided McNemar p(better) < {a.alpha} on paired wide seeds; '
+    +('AND nominal vs Stage-1 one-sided p(worse) >= alpha' if a.nominal_gate else 'nominal NOT a condition (reported only: vs Stage-1 and vs incumbent, paired McNemar)')
+    +'; tie-break: most wide, then higher nominal')
+S.update(gate_rule=GATE_RULE,pid=os.getpid(),gpus=GPUS,per_gpu=a.per_gpu,smoke=SM,planned_rounds=a.rounds,args=vars(a),std_max=STD_MAX)
 def save_state():write_json(state_path,S)
 def log(msg):
     line=f'[{cst()}] {msg}';print(line,flush=True)
@@ -43,7 +47,7 @@ def summ_gate(g):
 def status(phase,**kw):
     write_json(OUT/'status.json',dict(status='running',phase=phase,pid=os.getpid(),updated=cst(),smoke=SM,gpus=GPUS,per_gpu=a.per_gpu,current_policy=S['current_policy'],
         promoted=S['promoted'],stage1_gate=summ_gate(S.get('stage1_gate')),incumbent_gate=summ_gate(S.get('ref_gate')),
-        rounds_done=[k for k,v in S['rounds'].items() if v.get('done')],planned_rounds=a.rounds,**kw))
+        rounds_done=[k for k,v in S['rounds'].items() if v.get('done')],planned_rounds=a.rounds,gate_rule=GATE_RULE,**kw))
 def wilson(k,n):
     if n==0:return None
     z=1.95996398454;ph=k/n;c=(ph+z*z/(2*n))/(1+z*z/n);h=z*math.sqrt(ph*(1-ph)/n+z*z/(4*n*n))/(1+z*z/n);return [round(c-h,4),round(c+h,4)]
@@ -148,8 +152,7 @@ def report():
     L=['# Stage-2-wide v2: continue from round-2 candidate with nominal protection\n',f'_Auto-generated {cst()}; state `{state_path}`, log `{LOG}`._\n',
        '## Setup',f'- Start policy (starting incumbent): `{S["start_policy"]}`; Stage-1: `{STAGE1}`',
        f'- Per round: collect {NCOL} eps ({a.nominal_frac:.0%} nominal +-5mm/+-2deg, rest wide; {a.sto_frac:.2f} small-sigma sampler), seeds {SEED_BASE}+5000*(r-1); IQL {a.iql_steps} steps on all data; PPO lr {a.lr}, <= {a.ppo_steps} steps, advantage batch 96 wide + {a.nom_batch} nominal states (per-group normalised), KL anchor to Stage-1 on 32 demo + 32 nominal-rollout states, weight {a.anchor} (v1: 1.0, demo only, ref = stage input).',
-       f'- Gate (paired, same seeds as v1): 6 wide cells x 50 (620000-620049) + nominal 100 (880000-880099). PROMOTE iff wide delta vs incumbent >= +{a.min_delta} AND exact one-sided McNemar p(better) < {a.alpha} AND nominal vs Stage-1 one-sided p(worse) >= {a.alpha}. '
-       f'(With Stage-1 nominal 100/100, the nominal condition means at most 4 nominal losses vs Stage-1.)',
+       f'- Gate (paired, same seeds as v1): 6 wide cells x 50 (620000-620049) + nominal 100 (880000-880099). Rule: {GATE_RULE}.',
        f'- Stop: no promotion in a round, or promoted gain < +{a.min_delta}, or {a.rounds} rounds.',
        f'- Current policy: `{S["current_policy"]}`; promoted: {S["promoted"]}; stop: {S.get("stop_reason")}\n']
     if S.get('stage1_gate'):
@@ -162,10 +165,11 @@ def report():
         if 'iql' in v:L.append('- IQL: '+json.dumps({k:v['iql'].get('final',{}).get(k) for k in ['v_auc_all_wide','v_auc_t0_wide','v_auc_t20_wide','v_auc_all_rollout','heldout_td_mse']}))
         if 'ppo' in v:L.append(f'- PPO: steps {v["ppo"].get("steps_run")}, accepted OPE evals {v["ppo"].get("accepted")}, stop {v["ppo"].get("stop_reason")}, candidates {[c["milestone"] for c in v["ppo"].get("candidates",[])]}, input dev {v["ppo"].get("input_deviation")}')
         if v.get('gate'):
-            L.append('\n| cand | wide | nominal | vs incumbent (d, +/-, p) | vs Stage-1 wide (d, p) | nominal vs Stage-1 (lost/gained, p_worse) | pass |');L.append('|---|---|---|---|---|---|---|')
+            L.append('\n| cand | wide | nominal | wide vs incumbent (d, +/-, p_better) | wide vs Stage-1 (d, p_better) | nominal vs Stage-1 (d, lost/gained, p_worse) [report only] | nominal vs incumbent (d, lost/gained, p_worse) [report only] | pass |');L.append('|---|---|---|---|---|---|---|---|')
             for nm,gg in v['gate'].items():
                 ci,cs,cn=gg['vs_incumbent'],gg['vs_stage1'],gg['nominal_vs_stage1']
-                L.append(f'| {nm} | {gg["wide"]}/{gg["wide_episodes"]} | {gg["nominal"]}/100 | {ci["delta"]:+d}, +{ci["gained"]}/-{ci["lost"]}, {fmt_p(ci["p_better_one_sided"])} | {cs["delta"]:+d}, {fmt_p(cs["p_better_one_sided"])} | {cn["lost"]}/{cn["gained"]}, {fmt_p(cn["p_worse_one_sided"])} | {gg["passes"]} ({"; ".join(gg["why"]) or "ok"}) |')
+                cni=gg['nominal_vs_incumbent']
+                L.append(f'| {nm} | {gg["wide"]}/{gg["wide_episodes"]} | {gg["nominal"]}/100 | {ci["delta"]:+d}, +{ci["gained"]}/-{ci["lost"]}, {fmt_p(ci["p_better_one_sided"])} | {cs["delta"]:+d}, {fmt_p(cs["p_better_one_sided"])} | {cn["delta"]:+d}, {cn["lost"]}/{cn["gained"]}, {fmt_p(cn["p_worse_one_sided"])} | {cni["delta"]:+d}, {cni["lost"]}/{cni["gained"]}, {fmt_p(cni["p_worse_one_sided"])} | {gg["passes"]} ({"; ".join(gg["why"]) or "ok"}) |')
         L.append(f'- promoted: {v.get("promoted")}')
     if S.get('final'):L.append('\n## Final evaluation\n```json\n'+json.dumps(S['final'],indent=1,ensure_ascii=False,default=str)+'\n```')
     (OUT/'REPORT.md').write_text('\n'.join(L)+'\n')
@@ -208,7 +212,7 @@ def preseed(name,src):
         d.mkdir(parents=True,exist_ok=True);shutil.copy2(src,d/'result.json');log(f'gate {name}: reusing v1 result {src} (same paired seeds; sha checked)')
 
 def main():
-    log(f'pipeline v2 start pid={os.getpid()} smoke={SM} gpus={GPUS} per_gpu={a.per_gpu} std_max={STD_MAX} start={START}');save_state()
+    log(f'pipeline v2 start pid={os.getpid()} smoke={SM} gpus={GPUS} per_gpu={a.per_gpu} std_max={STD_MAX} start={START}');log(f'GATE RULE: {GATE_RULE}');save_state()
     if not SM:preseed('stage1',V1/'gate/stage1/result.json');preseed('start',V1/'gate/r2_m150/result.json')
     if 'stage1_gate' not in S:S['stage1_gate']=timed('stage1_gate',lambda:gate(STAGE1,'stage1'));save_state()
     if 'start_gate' not in S:
@@ -244,11 +248,12 @@ def main():
             why=[]
             if ci['delta']<a.min_delta:why.append(f'wide delta {ci["delta"]:+d} < +{a.min_delta}')
             if ci['p_better_one_sided']>=a.alpha:why.append(f'wide p {ci["p_better_one_sided"]:.3g} >= {a.alpha}')
-            if cn['p_worse_one_sided']<a.alpha:why.append(f'nominal significantly worse than Stage-1 (lost {cn["lost"]}, gained {cn["gained"]}, p {cn["p_worse_one_sided"]:.3g})')
+            if a.nominal_gate and cn['p_worse_one_sided']<a.alpha:why.append(f'nominal significantly worse than Stage-1 (lost {cn["lost"]}, gained {cn["gained"]}, p {cn["p_worse_one_sided"]:.3g})')
             R['gate'][nm]=dict(path=c['path'],wide=res['wide_successes'],wide_episodes=res['wide_episodes'],cells=res['cells'],fails=res['fails'],nominal=res['nominal_successes'],
                 vs_incumbent=ci,vs_stage1=cs,nominal_vs_stage1=cn,nominal_vs_incumbent=cni,cells_vs_stage1=percell(res,S['stage1_gate']),cells_vs_incumbent=percell(res,ref),
                 passes=bool(not why or SM),why=why,ppo_candidate={k:v for k,v in c.items() if k not in ('path','ope')})
-            log(f'round{r} gate {nm}: wide {res["wide_successes"]} (inc {ref["wide_successes"]}, d {ci["delta"]:+d}, p {ci["p_better_one_sided"]:.3g}) nominal {res["nominal_successes"]} (vs S1 lost {cn["lost"]} p_worse {cn["p_worse_one_sided"]:.3g}) -> {"PASS" if not why else "FAIL: "+"; ".join(why)}')
+            log(f'round{r} gate {nm}: wide {res["wide_successes"]} (inc {ref["wide_successes"]}, d {ci["delta"]:+d}, +{ci["gained"]}/-{ci["lost"]}, p_better {ci["p_better_one_sided"]:.3g}; vs S1 d {cs["delta"]:+d} p_better {cs["p_better_one_sided"]:.3g}) '
+                f'nominal {res["nominal_successes"]} [report only] (vs S1 {cn["delta"]:+d}, -{cn["lost"]}/+{cn["gained"]}, p_worse {cn["p_worse_one_sided"]:.3g}; vs inc {cni["delta"]:+d}, -{cni["lost"]}/+{cni["gained"]}, p_worse {cni["p_worse_one_sided"]:.3g}) -> {"PASS" if not why else "FAIL: "+"; ".join(why)}')
             save_state();report()
         passing=[(v['wide'],v['nominal'],k) for k,v in R['gate'].items() if v['passes']]
         if passing:
@@ -263,7 +268,7 @@ def main():
     if not S.get('stop_reason'):S['stop_reason']=f'max rounds ({a.rounds})'
     log(f'STOP: {S["stop_reason"]}');save_state()
     best=S['current_policy'];F=S.setdefault('final',{});F['policy']=best
-    F['note']='best = last promoted policy' if S['promoted'] else 'NO v2 promotion: best = starting incumbent (v1 round-2 candidate), which itself fails the nominal-vs-Stage-1 condition'
+    F['note']='best = last promoted policy' if S['promoted'] else 'NO v2 promotion: best = starting incumbent (v1 round-2 candidate)'
     F['gate_seeds_vs_stage1']=dict(note='selection-biased (gate seeds used for promotion)',wide=paired(S['ref_gate'],S['stage1_gate'],False),nominal=paired(S['ref_gate'],S['stage1_gate'],True),cells=percell(S['ref_gate'],S['stage1_gate']))
     save_state();report()
     H=F.setdefault('heldout',{})
