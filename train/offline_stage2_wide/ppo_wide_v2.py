@@ -21,8 +21,11 @@ ap.add_argument('--anchor',type=float,default=3.);ap.add_argument('--revert-afte
 ap.add_argument('--ope-every',type=int,default=25);ap.add_argument('--ope-states',type=int,default=2048);ap.add_argument('--patience',type=int,default=12)
 ap.add_argument('--min-gain',type=float,default=0.);ap.add_argument('--grad-clip',type=float,default=1.);ap.add_argument('--milestones',default='150,300,450,600')
 ap.add_argument('--accept-any',action='store_true',help='SMOKE ONLY')
+ap.add_argument('--force-save-steps',default='',help='comma list: save the CURRENT policy at these steps regardless of OPE (diagnostic)')
+ap.add_argument('--no-revert',action='store_true',help='never revert to last OPE-accepted weights (raw PPO trajectory)')
+ap.add_argument('--no-patience',action='store_true',help='never stop early on OPE patience')
 a=ap.parse_args();setup(4321);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
-MS=sorted(int(x) for x in a.milestones.split(','))
+MS=sorted(int(x) for x in a.milestones.split(','));FORCE={int(x) for x in a.force_save_steps.split(',') if x}
 sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources)
 ck=torch.load(a.critic,map_location='cuda',weights_only=False);stats={k:v.cuda() for k,v in ck['stats'].items()}
 C=Critic(2*FEAT+1,96).cuda();C.load_state_dict(ck['critic']);C.eval().requires_grad_(False)
@@ -125,12 +128,20 @@ for step in range(1,a.steps+1):
             n_acc+=1;since=0;acc_model.load_state_dict(model.state_dict());q_ref=q_new;a_ref=a_new;last_acc_step=step;accepted.append(rec)
         else:
             since+=1
-            if since%a.revert_after==0:
+            if since%a.revert_after==0 and not a.no_revert:
                 model.load_state_dict(acc_model.state_dict());opt=torch.optim.Adam(model.parameters(),lr=a.lr);rec['reverted_to_last_accepted']=True
         hist.append(rec);append_jsonl(out/'ope.jsonl',rec);print('OPE',json.dumps(rec),flush=True)
         write_json(out/'status.json',dict(status='running',total_steps=a.steps,accepted=n_acc,evals_since_accept=since,candidates=len(cands),updated=cst(),last_train=row,last_ope=rec))
     while mi<len(MS) and step>=MS[mi]:save_candidate(MS[mi]);mi+=1
-    if since>=a.patience:print('PATIENCE_STOP',flush=True);break
+    if step in FORCE:
+        with torch.no_grad():
+            qf,af=ope(model);nx=deploy(model,n_c,n_n);dx_=deploy(model,d_c,d_n);qn=C.qmin(n_s,joint_flat(nx));dd=qf-q_in;dn=qn-qn_inp
+        rec=dict(path=str(out/f'forced_step{step:04d}.pt'),step=step,forced=True,ope_gain_vs_input=dd.mean().item(),ope_gain_vs_input_se=(dd.std()/math.sqrt(len(dd))).item(),
+            ope_nominal_gain_vs_input=dn.mean().item(),ope_nominal_se=(dn.std()/math.sqrt(len(dn))).item(),action_dev_vs_stage_input=jdev(af,a_in),
+            action_dev_vs_stage1_demo=jdev(dx_,d_s1),action_dev_vs_stage1_nominal=jdev(nx,n_s1),n_ope_accepted_so_far=n_acc,elapsed_s=time.time()-t0)
+        save_policy(p,cp,rec['path'],dict(stage='offline_stage2_wide_v2_ppo_forced',source_policy=a.policy,anchor_ref=a.anchor_ref,critic=a.critic,**{k:v for k,v in rec.items() if k!='path'}))
+        append_jsonl(out/'forced.jsonl',rec);print('FORCED',json.dumps(rec),flush=True)
+    if since>=a.patience and not a.no_patience:print('PATIENCE_STOP',flush=True);break
     if step%10==0:write_json(out/'status.json',dict(status='running',total_steps=a.steps,accepted=n_acc,evals_since_accept=since,candidates=len(cands),updated=cst(),last_train=row,last_ope=hist[-1] if hist else None))
 save_candidate(step)
 assert all(torch.equal(v,enc_before[k]) for k,v in p.obs_encoder.state_dict().items()),'encoder changed'
