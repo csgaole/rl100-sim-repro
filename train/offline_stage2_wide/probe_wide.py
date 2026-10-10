@@ -4,7 +4,7 @@ Train = same training episodes as the critic (all sources), weight decay picked 
 reported on the same held-out episodes (wide subset and all rollouts)."""
 from wcommon import *
 import argparse
-ap=argparse.ArgumentParser();ap.add_argument('--sources',required=True);ap.add_argument('--out',required=True);a=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--sources',required=True);ap.add_argument('--out',required=True);ap.add_argument('--ts',default='0,10,20');ap.add_argument('--wds',default='1e-4,1e-3,1e-2,1e-1,1');a=ap.parse_args()
 setup(0);sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources);stats=feat_stats(D)
 tr=torch.nonzero(~D['heldout']).flatten();he=torch.nonzero(D['heldout']).flatten();y=D['success']
 ro=torch.tensor([s!='demo' for s in D['source']],device='cuda')
@@ -18,9 +18,9 @@ def fit(X,Y,wd,steps=300):
         opt.zero_grad();l=torch.nn.functional.binary_cross_entropy_with_logits(X@w+b,Y)+wd*w.square().sum();l.backward();return l
     opt.step(closure);return w.detach(),b.detach()
 res={}
-for t in [0,10,20]:
+for t in [int(x) for x in a.ts.split(',')]:
     X=feats(tr,t);Y=y[tr];perm=torch.randperm(len(tr),generator=torch.Generator().manual_seed(0)).cuda();folds=perm.chunk(5);cv={}
-    for wd in [1e-4,1e-3,1e-2,1e-1,1.]:
+    for wd in [float(x) for x in a.wds.split(',')]:
         sc=[]
         for f in folds:
             m=torch.ones(len(tr),dtype=torch.bool,device='cuda');m[f]=False;w,b=fit(X[m],Y[m],wd);sc.append(auc((X[f]@w+b).cpu().numpy(),Y[f].cpu().numpy()))
