@@ -1,0 +1,19 @@
+{
+  "status": "stopped_by_user",
+  "stopped_at": "2026-10-10 ~12:28 CST",
+  "stopped_by": "Le (killed pipeline PID 3612941 and all children)",
+  "restart": "NOT planned (do not restart Stage-2)",
+  "round1": {
+    "rollouts": "600/600 complete (stochastic sigma<=0.01): 471 success / 129 failure",
+    "iql": "100k steps done; heldout V-AUC(success) all rollout states 0.935, t0 0.644, t>=30 1.0",
+    "ppo": "300 outer steps, stop_reason=patience, accepted=0 (OPE gain ~1.2e-4 vs min_gain 1e-3); no OPE-accepted candidate -> no dev eval"
+  },
+  "round2": "stopped during collection at 274/600 rollouts (data kept, unused)",
+  "baseline": {
+    "dev_narrow": 100,
+    "expanded_20mm_10deg": 96,
+    "final_910000": 99
+  },
+  "selected_policy": "runs/bc_stage1/selected_development.pt (Stage-1, unchanged)",
+  "previous_status_file": "status_before_stop.json"
+}
