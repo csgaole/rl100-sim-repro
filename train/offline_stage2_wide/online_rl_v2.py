@@ -23,7 +23,7 @@ ap.add_argument('--K',type=int,default=10);ap.add_argument('--gpu',type=int,defa
 ap.add_argument('--seed-base',type=int,default=810000)
 ap.add_argument('--lr',type=float,default=2e-7);ap.add_argument('--lr-escalate',type=float,default=3e-7);ap.add_argument('--escalate-after',type=int,default=4);ap.add_argument('--escalate-dev',type=float,default=3e-4);ap.add_argument('--clip',type=float,default=.15);ap.add_argument('--epochs',type=int,default=2);ap.add_argument('--mb',type=int,default=512)
 ap.add_argument('--train-last',type=int,default=0,help='0 = PPO loss on all K denoising steps; k = only the last k steps')
-ap.add_argument('--anchor',type=float,default=3.);ap.add_argument('--anchor-ref',choices=['start','stage1'],default='start');ap.add_argument('--target-kl',type=float,default=.02);ap.add_argument('--anchor-batch',type=int,default=32);ap.add_argument('--grad-clip',type=float,default=1.)
+ap.add_argument('--anchor',type=float,default=3.);ap.add_argument('--anchor-ref',choices=['start','stage1'],default='start');ap.add_argument('--target-kl',type=float,default=.02);ap.add_argument('--kl-mode',choices=['minibatch','epoch'],default='minibatch');ap.add_argument('--kl-hard-cap',type=float,default=.15);ap.add_argument('--anchor-batch',type=int,default=32);ap.add_argument('--grad-clip',type=float,default=1.)
 ap.add_argument('--gamma',type=float,default=.99);ap.add_argument('--lam',type=float,default=.95);ap.add_argument('--time-pen',type=float,default=.05)
 ap.add_argument('--v-lr',type=float,default=3e-4);ap.add_argument('--v-epochs',type=int,default=10);ap.add_argument('--v-warm-epochs',type=int,default=30)
 ap.add_argument('--qc-every',type=int,default=2);ap.add_argument('--qc-n',type=int,default=20);ap.add_argument('--full-gate-margin',type=int,default=3)
@@ -221,11 +221,11 @@ def train_iter(it,M,C,X,Y,LP,L):
     Xt=torch.tensor(X,device='cuda');Yt=torch.tensor(Y,device='cuda');LPt=torch.tensor(LP,device='cuda')
     p.noise_scheduler.set_timesteps(a.K);TS=[t.to('cuda') for t in p.noise_scheduler.timesteps];steps=list(range(a.K))[-a.train_last:] if a.train_last else list(range(a.K))
     nom_idx=torch.tensor([i for i,e in enumerate(epi) if M[e]['cell']=='nominal'],device='cuda')
-    m=dict(init_logratio_absmean=None,init_logratio_max=None,pg_loss=0.,clip_frac=0.,approx_kl=0.,anchor_kl=0.,grad_norm=0.,n_updates=0,max_abs_logratio=0.,early_stop=None);n=len(Ct);g=torch.Generator(device='cuda').manual_seed(1000+int(it))
+    m=dict(init_logratio_absmean=None,init_logratio_max=None,pg_loss=0.,clip_frac=0.,approx_kl=0.,anchor_kl=0.,grad_norm=0.,n_updates=0,max_abs_logratio=0.,early_stop=None,epoch_kl=[]);n=len(Ct);g=torch.Generator(device='cuda').manual_seed(1000+int(it))
     stop=False
     for ep in range(a.epochs):
         if stop:break
-        perm=torch.randperm(n,device='cuda',generator=g)
+        perm=torch.randperm(n,device='cuda',generator=g);eks=[]
         for i in range(0,n,a.mb):
             j=perm[i:i+a.mb];cond=Ct[j];aj=adv[j];opt.zero_grad(set_to_none=True);cf=0.;ak=0.;p.noise_scheduler.set_timesteps(a.K)
             for s in steps:
@@ -240,10 +240,16 @@ def train_iter(it,M,C,X,Y,LP,L):
             for s in range(len(xd)):
                 with torch.no_grad():mr,sr=kernel(p,anc(xd[s],T10[s],global_cond=cd),T10[s],xd[s])
                 mn,_=kernel(p,model(xd[s],T10[s],global_cond=cd),T10[s],xd[s]);kl=(.5*((mn-mr)/sr).square())[...,JOINTS].mean();(a.anchor*kl).backward();kls+=kl.item()
-            if ak>a.target_kl and m['n_updates']>0:  # standard PPO KL early stop (measured on this minibatch before stepping)
+            eks.append(ak)
+            if a.kl_mode=='minibatch' and ak>a.target_kl and m['n_updates']>0:  # v2_lr behaviour: per-minibatch KL early stop (measured before stepping)
                 m['early_stop']=dict(epoch=ep,minibatch=i//a.mb,approx_kl=ak);opt.zero_grad(set_to_none=True);stop=True;break
+            if a.kl_mode=='epoch' and ak>a.kl_hard_cap and m['n_updates']>0:  # safety cap only; target checked on the epoch average
+                m['early_stop']=dict(kind='hard_cap',epoch=ep,minibatch=i//a.mb,approx_kl=ak);opt.zero_grad(set_to_none=True);stop=True;break
             gn=nn.utils.clip_grad_norm_(model.parameters(),a.grad_clip);opt.step()
             m['clip_frac']+=cf;m['approx_kl']+=ak;m['anchor_kl']+=kls;m['grad_norm']+=float(gn);m['n_updates']+=1
+        if eks:m['epoch_kl'].append(float(np.mean(eks)))
+        if a.kl_mode=='epoch' and not stop and eks and np.mean(eks)>a.target_kl:  # standard PPO: stop after the epoch whose mean approx KL exceeds the target
+            m['early_stop']=dict(kind='epoch_mean',epoch=ep,epoch_mean_kl=float(np.mean(eks)));stop=True
     for k in ['pg_loss','clip_frac','approx_kl','anchor_kl','grad_norm']:m[k]/=max(m['n_updates'],1)
     return dict(m,samples=n,v_loss=vloss,v_warm_loss=warm,v_ev_pre=ev_pre,v_ev_pre_vs_mc=ev_pre_mc,v_ev_post=ev_post,adv_mean_raw=float(A.mean()),adv_std_raw=float(A.std()),
         adv_pos_frac=float((A>0).mean()),ret_mean=float(mcn.mean()),**devs(),train_wall_s=time.time()-t0)
