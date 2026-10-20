@@ -48,3 +48,53 @@ def load_dataset_w(sources,device='cuda'):
     succ=torch.tensor(succ,device=device,dtype=torch.float32);held=torch.tensor(held,device=device);wide=torch.tensor(wide,device=device);nom=torch.tensor(nom,device=device)
     R=torch.zeros(len(succ),CHUNKS,device=device);R[:,-1]=succ
     return dict(F=F,A=A,AJ=joint_flat(A),R=R,success=succ,heldout=held,wide=wide,nominal=nom,source=src,seeds=seeds,n=len(succ))
+
+# ---------------- online RL: encoder freeze / lr (official uni_ppo style) ----------------
+def configure_online_policy(p, fix_encoder=False):
+    """Keep policy in eval() (BN frozen, matches prior online RL). Always freeze normalizer.
+    If fix_encoder: freeze obs_encoder (old behavior). Else: unfreeze obs_encoder for training."""
+    p.eval()
+    p.normalizer.requires_grad_(False)
+    if fix_encoder:
+        p.obs_encoder.requires_grad_(False)
+    else:
+        p.obs_encoder.requires_grad_(True)
+    return p.model
+
+def make_policy_optimizers(p, lr, fix_encoder=False, encoder_lr_scale=1.0):
+    """Official-style Adam setup (uni_ppo.transfer2online).
+    fix_encoder -> Adam(model) only.
+    else if encoder_lr_scale==1.0 -> single Adam(policy.parameters()) at lr (normalizer frozen so no grads).
+    else -> Adam(model) at lr + Adam(obs_encoder) at lr*scale.
+    Returns (opt, enc_opt) where enc_opt is None unless two-Adam path."""
+    if fix_encoder:
+        return torch.optim.Adam(p.model.parameters(), lr=lr), None
+    if float(encoder_lr_scale) != 1.0:
+        opt = torch.optim.Adam(p.model.parameters(), lr=lr)
+        enc_opt = torch.optim.Adam(p.obs_encoder.parameters(), lr=lr * float(encoder_lr_scale))
+        return opt, enc_opt
+    return torch.optim.Adam(p.parameters(), lr=lr), None
+
+def policy_grad_params(p, fix_encoder=False):
+    """Params to clip for the policy update (model, plus encoder when unfrozen)."""
+    if fix_encoder:
+        return list(p.model.parameters())
+    return list(p.obs_encoder.parameters()) + list(p.model.parameters())
+
+def set_policy_lrs(opt, enc_opt, lr, encoder_lr_scale=1.0):
+    for g in opt.param_groups:
+        g['lr'] = lr
+    if enc_opt is not None:
+        for g in enc_opt.param_groups:
+            g['lr'] = lr * float(encoder_lr_scale)
+
+def zero_policy_opts(opt, enc_opt, set_to_none=True):
+    opt.zero_grad(set_to_none=set_to_none)
+    if enc_opt is not None:
+        enc_opt.zero_grad(set_to_none=set_to_none)
+
+def step_policy_opts(opt, enc_opt):
+    opt.step()
+    if enc_opt is not None:
+        enc_opt.step()
+

@@ -27,6 +27,9 @@ ap.add_argument('--v-lr',type=float,default=3e-4);ap.add_argument('--v-epochs',t
 ap.add_argument('--qc-every',type=int,default=2);ap.add_argument('--qc-n',type=int,default=20);ap.add_argument('--full-gate-margin',type=int,default=3)
 ap.add_argument('--keep-last',type=int,default=3);ap.add_argument('--ddim-check',type=int,default=0,help='N>0: only run the K=5 vs K=10 stochastic-sampler check on N eps and exit')
 ap.add_argument('--smoke',action='store_true')
+ap.add_argument('--fix-encoder',action='store_true',help='freeze vision encoder (old behavior); default trains encoder+UNet')
+ap.add_argument('--encoder-lr-scale',type=float,default=1.0,help='encoder LR = lr * scale when not --fix-encoder; 1.0 = single Adam(policy) like official; 0.1 matches some official online bash overrides')
+
 a=ap.parse_args();OUT=Path(a.out);OUT.mkdir(parents=True,exist_ok=True);PY=sys.executable;setup(0)
 LOG=OUT/'online.log';SP=OUT/'state.json'
 def log(m):
@@ -105,14 +108,14 @@ if a.ddim_check:
     R['drop_pts']=100*(R[10]['rate']-R[5]['rate']);R['speedup']=R[10]['wall_s']/R[5]['wall_s'];write_json(OUT/'ddim_check.json',R);log(f'DDIM check: drop {R["drop_pts"]:.1f} pts, speedup x{R["speedup"]:.2f}');sys.exit(0)
 
 # ---------------- models ----------------
-p,cp=load_policy(a.start);p.eval();p.obs_encoder.requires_grad_(False);p.normalizer.requires_grad_(False);model=p.model
+p,cp=load_policy(a.start);model=configure_online_policy(p,fix_encoder=a.fix_encoder)
 p1,_=load_policy(STAGE1);ref=p1.model.eval().requires_grad_(False)
 start_model=copy.deepcopy(model).eval().requires_grad_(False)
 anc=start_model if a.anchor_ref=='start' else ref  # Stage-1 anchor: gradient ~16x the PG gradient at the start policy (KL~7), would drag the policy back to Stage-1
 class VNet(nn.Module):
     def __init__(s):super().__init__();s.n=nn.Sequential(nn.Linear(2*FEAT,512),nn.ReLU(),nn.Linear(512,512),nn.ReLU(),nn.Linear(512,1))
     def forward(s,x):return s.n(x).squeeze(-1)
-V=VNet().cuda();vopt=torch.optim.Adam(V.parameters(),lr=a.v_lr);opt=torch.optim.Adam(model.parameters(),lr=a.lr);VS=None
+V=VNet().cuda();vopt=torch.optim.Adam(V.parameters(),lr=a.v_lr);opt,enc_opt=make_policy_optimizers(p,a.lr,fix_encoder=a.fix_encoder,encoder_lr_scale=a.encoder_lr_scale);log(f'policy opt: fix_encoder={a.fix_encoder} encoder_lr_scale={a.encoder_lr_scale} enc_opt={"yes" if enc_opt is not None else "no"}');VS=None
 DD=load_dataset_w([['demo',str(DEMO_DIR)]]);demo_tr=torch.nonzero(~DD['heldout']).flatten();demo_ho=torch.nonzero(DD['heldout']).flatten()
 gfix=torch.Generator(device='cuda').manual_seed(2026)
 def demo_cond(idx,t):return policy_cond(DD,idx,t)
@@ -129,7 +132,7 @@ def devs():
     return out
 TRAINER=OUT/'trainer_last.pt';RESUMED_IT=0;RESUMED_TRAIN=None
 if TRAINER.exists():
-    ck=torch.load(TRAINER,map_location='cuda',weights_only=False);model.load_state_dict(ck['model']);V.load_state_dict(ck['V']);opt.load_state_dict(ck['opt']);vopt.load_state_dict(ck['vopt'])
+    ck=torch.load(TRAINER,map_location='cuda',weights_only=False);model.load_state_dict(ck['model']);V.load_state_dict(ck['V']);opt.load_state_dict(ck['opt']);vopt.load_state_dict(ck['vopt']);(enc_opt.load_state_dict(ck['enc_opt']) if enc_opt is not None and ck.get('enc_opt') else None)
     VS={k:v.cuda() for k,v in ck['VS'].items()} if ck['VS'] else None;FIX_ROLL=ck['FIX_ROLL'].cuda() if ck.get('FIX_ROLL') is not None else None;RESUMED_IT=int(ck['it']);RESUMED_TRAIN=ck.get('train');log(f'resumed trainer state after iter {ck["it"]}')
 def ckpt_path(it):return Path(a.start) if it==0 else OUT/'ckpt'/f'it{it:03d}.pt'
 V2=ROOT/'runs/offline_stage2_wide_v2'  # same reference gate results forced_eval.py pairs against (start = round-2 candidate)
@@ -161,7 +164,7 @@ def report():
        f'- start `{a.start}`; anchor ref {a.anchor_ref} (w={a.anchor}), target KL {a.target_kl} on demo+nominal states; K={a.K} DDIM (train), eval = deterministic 10-step deployment sampler (batch_worker.py)',
        f'- {a.eps} eps/iter ({a.nominal_frac:.0%} nominal, rest uniform over 6 gate cells), seeds {a.seed_base}+1000*it; reward success 1-{a.time_pen}*(k*+1)/480, failures 0 (drop / early wrong_face terminate)',
        f'- V: 2x512 MLP on [z_(t-1),z_t] (no clock), refit each iter ({a.v_epochs} ep; {a.v_warm_epochs} MC warm-up ep on iter 1); GAE gamma {a.gamma} lambda {a.lam}',
-       f'- PPO: lr {a.lr}, clip {a.clip}, {a.epochs} epochs, mb {a.mb}, train steps {"all" if not a.train_last else "last "+str(a.train_last)}, grad clip {a.grad_clip}',
+       f'- PPO: lr {a.lr}, fix_encoder={a.fix_encoder}, encoder_lr_scale={a.encoder_lr_scale}, clip {a.clip}, {a.epochs} epochs, mb {a.mb}, train steps {"all" if not a.train_last else "last "+str(a.train_last)}, grad clip {a.grad_clip}',
        f'- quick check every {a.qc_every} iters: 6 cells x {a.qc_n} (620000+) + nominal {a.qc_n} (880000+), paired vs stored r2-cand / Stage-1 outcomes; full gate if wide >= r2 subset + {a.full_gate_margin}\n',
        '| it | train wide | train nominal | fails | mean chunks | V EV (pre/post) | adv std | clip frac | approx KL | anchor KL | dev vs start / S1 (demo) | quick check | wall s (collect/train/total) |','|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for it,v in sorted(ST['iters'].items(),key=lambda x:int(x[0])):
@@ -218,7 +221,7 @@ def train_iter(it,M,C,X,Y,LP,L):
         if stop:break
         perm=torch.randperm(n,device='cuda',generator=g)
         for i in range(0,n,a.mb):
-            j=perm[i:i+a.mb];cond=Ct[j];aj=adv[j];opt.zero_grad(set_to_none=True);cf=0.;ak=0.;p.noise_scheduler.set_timesteps(a.K)
+            j=perm[i:i+a.mb];cond=Ct[j];aj=adv[j];zero_policy_opts(opt,enc_opt);cf=0.;ak=0.;p.noise_scheduler.set_timesteps(a.K)
             for s in steps:
                 mean,std=kernel(p,model(Xt[j,s],TS[s],global_cond=cond),TS[s],Xt[j,s]);logr=logprob(mean,std,Yt[j,s])-LPt[j,s]
                 if m['init_logratio_absmean'] is None:m['init_logratio_absmean']=logr.abs().mean().item();m['init_logratio_max']=logr.abs().max().item()
@@ -232,8 +235,8 @@ def train_iter(it,M,C,X,Y,LP,L):
                 with torch.no_grad():mr,sr=kernel(p,anc(xd[s],T10[s],global_cond=cd),T10[s],xd[s])
                 mn,_=kernel(p,model(xd[s],T10[s],global_cond=cd),T10[s],xd[s]);kl=(.5*((mn-mr)/sr).square())[...,JOINTS].mean();(a.anchor*kl).backward();kls+=kl.item()
             if ak>a.target_kl and m['n_updates']>0:  # standard PPO KL early stop (measured on this minibatch before stepping)
-                m['early_stop']=dict(epoch=ep,minibatch=i//a.mb,approx_kl=ak);opt.zero_grad(set_to_none=True);stop=True;break
-            gn=nn.utils.clip_grad_norm_(model.parameters(),a.grad_clip);opt.step()
+                m['early_stop']=dict(epoch=ep,minibatch=i//a.mb,approx_kl=ak);zero_policy_opts(opt,enc_opt);stop=True;break
+            gn=nn.utils.clip_grad_norm_(policy_grad_params(p,a.fix_encoder),a.grad_clip);step_policy_opts(opt,enc_opt)
             m['clip_frac']+=cf;m['approx_kl']+=ak;m['anchor_kl']+=kls;m['grad_norm']+=float(gn);m['n_updates']+=1
     for k in ['pg_loss','clip_frac','approx_kl','anchor_kl','grad_norm']:m[k]/=max(m['n_updates'],1)
     return dict(m,samples=n,v_loss=vloss,v_warm_loss=warm,v_ev_pre=ev_pre,v_ev_pre_vs_mc=ev_pre_mc,v_ev_post=ev_post,adv_mean_raw=float(A.mean()),adv_std_raw=float(A.std()),
@@ -246,7 +249,7 @@ def prune():
     for f in (OUT/'ckpt').glob('it*.pt'):
         if int(f.stem[2:]) not in keep:f.unlink()
 def main():
-    log(f'online RL start pid={os.getpid()} gpu={a.gpu} workers={a.workers} K={a.K} eps/iter={a.eps} iters={a.iters} smoke={a.smoke}');save_state()
+    log(f'online RL start pid={os.getpid()} gpu={a.gpu} workers={a.workers} K={a.K} eps/iter={a.eps} iters={a.iters} smoke={a.smoke} fix_encoder={a.fix_encoder} encoder_lr_scale={a.encoder_lr_scale}');save_state()
     (OUT/'ckpt').mkdir(exist_ok=True)
     for it in range(1,a.iters+1):
         I=ST['iters'].setdefault(str(it),{})
@@ -261,7 +264,7 @@ def main():
         else:
           status(f'it{it}:train');tr=train_iter(it,M,C,X,Y,LP,L);I['train']=tr
           save_policy(p,cp,ckpt_path(it),dict(stage='online_rl_pilot',iteration=it,start=a.start,anchor_ref=a.anchor_ref))
-          torch.save(dict(train=tr,it=it,model=model.state_dict(),V=V.state_dict(),opt=opt.state_dict(),vopt=vopt.state_dict(),VS={k:v.cpu() for k,v in VS.items()},FIX_ROLL=FIX_ROLL.cpu()),str(TRAINER)+'.tmp');os.replace(str(TRAINER)+'.tmp',TRAINER);save_state()
+          torch.save(dict(train=tr,it=it,model=model.state_dict(),V=V.state_dict(),opt=opt.state_dict(),vopt=vopt.state_dict(),enc_opt=(enc_opt.state_dict() if enc_opt is not None else None),VS={k:v.cpu() for k,v in VS.items()},FIX_ROLL=FIX_ROLL.cpu()),str(TRAINER)+'.tmp');os.replace(str(TRAINER)+'.tmp',TRAINER);save_state()
           log(f'it{it} train: V EV pre {tr["v_ev_pre"]:.3f} post {tr["v_ev_post"]:.3f}, adv std {tr["adv_std_raw"]:.4f}, clip frac {tr["clip_frac"]:.3f}, approx_kl {tr["approx_kl"]:.4f}, anchor_kl {tr["anchor_kl"]:.3f}, dev start/S1 demo {tr["dev_vs_start_demo"]:.4f}/{tr["dev_vs_stage1_demo"]:.4f}, {tr["train_wall_s"]:.0f}s')
         I['wall']=dict(collect=tc,train=tr.get('train_wall_s',float('nan')))
         if it%a.qc_every==0 or it==a.iters:
