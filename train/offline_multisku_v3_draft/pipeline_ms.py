@@ -1,3 +1,9 @@
+# [offline_multisku_v3_draft official-align 2026-10-20] Bill:「V3按官方进行修改」
+# IL: Actor 2e-5 + Encoder 5e-6 (Normalizer frozen); after IL re-extract demos (--force) for next-round IQL.
+# IQL: Q1024+LN / V512, lr 1e-5, tau 0.0025, batch 256; GAMMA=0.999/chunk; Enc N/A (feats).
+# PPO: 3000 steps, batch 256, lr 1e-6, clip 0.1, grad_clip 0.5; Enc+Norm frozen; per-dim KL adaptive; anchor 6; pi_old refresh.
+# Fixed rules kept: IC +-5/2, DDIM sigma0, std[.0067,.1], sparse reward, IL data=demos+latest successes, order unchanged.
+# Dynamics 7/5 ensemble DEFERRED (still reference-only). Rollout ep RGB absent -> demo re-extract only (rollout feats refresh on next collect).
 # [offline_multisku_v3_draft 2026-10-20] copy of v2 pipeline_ms.py with Bill-approved changes ("按建议修改"):
 #   PPO: KL-adaptive lr on per-dim KL (no 0.02 early stop; safety stop at --kl-hard-mult x target), pi_old refresh every --old-refresh (50),
 #        anchor coef 6 to round-start on demo+success states, --adv-samples 4 + omega .7; lr r1 1e-6, r2+ INITIAL lr 3e-7 (adaptive thereafter).
@@ -40,10 +46,10 @@ ap.add_argument('--shard-size',type=int,default=5,help='episodes per lock-step w
 ap.add_argument('--collect-r0',type=int,default=1500,help='round-0 bootstrap collect with the start policy (critic needs failures)')
 ap.add_argument('--collect',default='1500,1500,1500',help='episodes per round (multiple of 5 -> even per SKU)');ap.add_argument('--collect-seed0',type=int,default=2200000)
 ap.add_argument('--ic-pos-mm',type=float,default=5.);ap.add_argument('--ic-yaw-deg',type=float,default=2.)
-ap.add_argument('--iql-steps',type=int,default=100000);ap.add_argument('--iql-batch',type=int,default=2048)
+ap.add_argument('--iql-steps',type=int,default=100000);ap.add_argument('--iql-batch',type=int,default=256)
 ap.add_argument('--tm-steps',type=int,default=20000);ap.add_argument('--tm-batch',type=int,default=4096);ap.add_argument('--amq-states',type=int,default=1024)
-ap.add_argument('--ppo-steps',type=int,default=300);ap.add_argument('--ppo-batch',type=int,default=256);ap.add_argument('--lr',type=float,default=1e-6);ap.add_argument('--r2-lr',type=float,default=3e-7,help='round>=2 INITIAL lr (adaptive)')
-ap.add_argument('--anchor',type=float,default=6.);ap.add_argument('--milestones',default='50,100,150,300');ap.add_argument('--r2-milestones',default='50,100,150,300')
+ap.add_argument('--ppo-steps',type=int,default=3000);ap.add_argument('--ppo-batch',type=int,default=256);ap.add_argument('--lr',type=float,default=1e-6);ap.add_argument('--r2-lr',type=float,default=1e-6,help='round>=2 INITIAL lr (adaptive; official/R5 1e-6)')
+ap.add_argument('--anchor',type=float,default=6.);ap.add_argument('--milestones',default='500,1000,2000,3000');ap.add_argument('--r2-milestones',default='500,1000,2000,3000')
 ap.add_argument('--gate-per-sku',type=int,default=50);ap.add_argument('--select-seed0',type=int,default=880000);ap.add_argument('--confirm-seed0',type=int,default=880050);ap.add_argument('--final-seed0',type=int,default=920000,help='FINAL unbiased reserved seed0 (20/SKU); never used by this pipeline')
 ap.add_argument('--pool-min-delta',type=int,default=2,help='pooled (select+confirm, 200 eps) candidate - input successes must be >= this')
 ap.add_argument('--pool-p',type=float,default=.2,help='AND exact one-sided paired sign test (McNemar) p on the 200 pooled pairs must be < this')
@@ -51,7 +57,7 @@ ap.add_argument('--kl-target-dim',type=float,default=5e-4);ap.add_argument('--kl
 ap.add_argument('--old-refresh',type=int,default=50);ap.add_argument('--adv-samples',type=int,default=4);ap.add_argument('--omega',type=float,default=.7);ap.add_argument('--anchor-batch',type=int,default=128)
 ap.add_argument('--hard-gate-per-sku',type=int,default=0,help='>0: extra LOG-ONLY hard-IC gate of input+best candidate');ap.add_argument('--hard-seed0',type=int,default=880500)
 ap.add_argument('--hard-ic-pos-mm',type=float,default=10.);ap.add_argument('--hard-ic-yaw-deg',type=float,default=5.)
-ap.add_argument('--il-steps',type=int,default=300);ap.add_argument('--il-batch',type=int,default=256);ap.add_argument('--il-lr',type=float,default=1e-5,help='v3: 1e-5 (official lr_bc 1e-4 also allowed)');ap.add_argument('--il-ema',type=float,default=.999)
+ap.add_argument('--il-steps',type=int,default=1000);ap.add_argument('--il-batch',type=int,default=256);ap.add_argument('--il-lr',type=float,default=2e-5);ap.add_argument('--il-encoder-lr',type=float,default=5e-6);ap.add_argument('--il-ema',type=float,default=.999)
 ap.add_argument('--il-l2',type=float,default=.1);ap.add_argument('--il-demo-frac',type=float,default=.125);ap.add_argument('--il-max-delta',type=float,default=.2)
 a=ap.parse_args();SM=a.smoke
 assert OUT is not None and abs(STD_MAX-0.1)<1e-12,'set S2_OUT and S2_STD_MAX=0.1 (rule 7)'
@@ -287,8 +293,8 @@ def main():
         # STEP 3 offline PPO (pi_old = pol fixed, KL anchor 6 to pol, all accumulated data)
         pdir=RD(r)/'ppo';lr=a.lr if r==1 else a.r2_lr;ms=a.milestones if r==1 else a.r2_milestones;log(f'round{r} STEP3_PPO pi_old=round-start {pol} lr={lr} anchor={a.anchor} kl_target_dim={a.kl_target_dim} hard x{a.kl_hard_mult} refresh={a.old_refresh} adv_samples={a.adv_samples} omega={a.omega}')
         if not (pdir/'report.json').exists():
-            extra=['--steps',30,'--batch',8,'--anchor-batch',8,'--old-refresh',10,'--ope-states',64,'--milestones','10,30'] if SM else ['--steps',a.ppo_steps,'--batch',a.ppo_batch,'--milestones',ms]
-            timed(f'r{r}_ppo',lambda:run([HERE/'ppo_ms.py','--policy',pol,'--critic',idir/'critic.pt','--sources',sp,'--out',pdir,'--lr',lr,'--anchor',a.anchor,'--kl-target-dim',a.kl_target_dim,'--kl-hard-mult',a.kl_hard_mult,'--kl-stop-window',a.kl_stop_window,'--old-refresh',a.old_refresh,'--adv-samples',a.adv_samples,'--omega',a.omega,'--anchor-batch',a.anchor_batch,*extra],RD(r)/'ppo.log',f'round{r}:ppo',poll=pdir/'status.json'))
+            extra=['--steps',30,'--batch',8,'--anchor-batch',8,'--old-refresh',10,'--adv-samples',2,'--ope-states',64,'--milestones','10,30'] if SM else ['--steps',a.ppo_steps,'--batch',a.ppo_batch,'--milestones',ms]
+            timed(f'r{r}_ppo',lambda:run([HERE/'ppo_ms.py','--policy',pol,'--critic',idir/'critic.pt','--sources',sp,'--out',pdir,'--lr',lr,'--anchor',a.anchor,'--clip',0.1,'--clip-final',0.1,'--grad-clip',0.5,'--kl-target-dim',a.kl_target_dim,'--kl-hard-mult',a.kl_hard_mult,'--kl-stop-window',a.kl_stop_window,'--old-refresh',a.old_refresh,'--adv-samples',a.adv_samples,'--omega',a.omega,'--anchor-batch',a.anchor_batch,*extra],RD(r)/'ppo.log',f'round{r}:ppo',poll=pdir/'status.json'))
         R['ppo']={k:v for k,v in json.loads((pdir/'report.json').read_text()).items() if k!='ope_history_tail'};save_state()
         if R['ppo'].get('kl_early_stop'):log(f"round{r} PPO KL_EARLY_STOP {json.dumps(R['ppo']['kl_early_stop'])}")
         log(f"round{r} PPO kl_summary {json.dumps(R['ppo'].get('kl_summary'))}")
@@ -323,13 +329,21 @@ def main():
         log(f"round{r} STEP7_IL base={pa} data=demos + round{r} collect successes (collected by {R['collect_policy_name']})")
         if 'il' not in R:
             ppo_args=['--ppo-from',R['policy_in'],'--ppo-to',pa] if pa!=R['policy_in'] else []
-            timed(f'r{r}_il',lambda:run([HERE/'il_ms.py','--policy',pa,'--sources',spil,'--out',il_path,'--steps',a.il_steps if not SM else 20,'--batch',a.il_batch,'--lr',a.il_lr,'--ema',a.il_ema,'--l2',a.il_l2,'--demo-frac',a.il_demo_frac,'--max-delta',a.il_max_delta,'--eval-every',50 if not SM else 5,*ppo_args],
+            timed(f'r{r}_il',lambda:run([HERE/'il_ms.py','--policy',pa,'--sources',spil,'--out',il_path,'--steps',a.il_steps if not SM else 20,'--batch',a.il_batch,'--lr',a.il_lr,'--encoder-lr',a.il_encoder_lr,'--ema',a.il_ema,'--l2',a.il_l2,'--demo-frac',a.il_demo_frac,'--max-delta',a.il_max_delta,'--eval-every',50 if not SM else 5,*ppo_args],
                 RD(r)/'il.log',f'round{r}:il',poll=str(il_path.with_suffix('.status.json'))))
             R['il']=json.loads(il_path.with_suffix('.status.json').read_text());save_state()
         if 'il_gate' not in R:
             gi=timed(f'r{r}_il_gate',lambda:gate_pooled(il_path,f'r{r}_il'));R['il_gate']=gi['successes'];R['il_gate_detail']=dict(select=gi['select'],confirm=gi['confirm'],per_sku=gi['per_sku']);save_state()
         ok=R['il_gate']>=R['pol_after_pooled']   # IL gate: POOLED (200 eps) not-worse vs the pre-IL policy (its pooled result is cached from the formal gate)
         R['il_decision']=dict(rule='pooled200 not-worse',next_input='il' if ok else 'pre_il_fallback',il_pooled=R['il_gate'],pre_il_pooled=R['pol_after_pooled'],path=str(il_path) if ok else pa)
+        if ok:
+            # official/R5: Feature Extract after IL (demos only — rollout ep.npz has no RGB; next collect refreshes rollout feats)
+            log(f'round{r} STEP7b_REEXTRACT_DEMOS with IL policy {il_path}')
+            timed(f'r{r}_reextract',lambda:run([HERE/'demo_features_ms.py','--policy',il_path,'--force'],RD(r)/'reextract_demos.log',f'round{r}:reextract_demos'))
+            R['reextract_demos']=dict(policy=str(il_path),updated=cst());save_state()
+        else:
+            log(f'round{r} STEP7b_REEXTRACT skipped (IL not adopted)')
+
         log(f"round{r} STEP7_DONE IL pooled {R['il_gate']}/200 vs pre-IL {R['pol_after_pooled']}/200 -> next input {R['il_decision']['next_input']} ({R['il_decision']['path']})")
         S['current_policy']=R['il_decision']['path'];R['done']=True;R['finished']=cst();save_state();report()
     S['final']=dict(policy=S['current_policy'],promoted=S['promoted'],final_seed0=a.final_seed0,note=f'final unbiased evaluation is NOT part of this pipeline; reserved seeds {a.final_seed0}..+{NPS-1} x 5 SKUs (never gated/collected)')

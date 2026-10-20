@@ -1,3 +1,4 @@
+# [offline_multisku_v3_draft official-align] BPPO~3000, batch 256, lr 1e-6, clip 0.1, grad_clip 0.5; Enc+Norm frozen.
 # [offline_multisku_v3_draft 2026-10-20] NEW file = v2 ppo_ms.py + Bill-approved report recommendations:
 #  (1) NO hard KL early stop at 0.02: KL-ADAPTIVE lr (official uni_ppo AdaptiveScheduler: lr/1.5 if kl>2*target, *1.5 if kl<target/2,
 #      clamped [lr/--lr-range, lr*--lr-range]) on PER-DIM KL = post-update approx_kl(pi_theta||pi_old) / (8 x 12 joint dims);
@@ -12,23 +13,23 @@
 from ms_common import *
 import argparse,copy
 ap=argparse.ArgumentParser();ap.add_argument('--policy',required=True,help='round-start policy (= initial pi_old = KL anchor)');ap.add_argument('--critic',required=True);ap.add_argument('--sources',required=True)
-ap.add_argument('--out',required=True);ap.add_argument('--steps',type=int,default=300);ap.add_argument('--batch',type=int,default=128,help='states per step (x --adv-samples chains)')
+ap.add_argument('--out',required=True);ap.add_argument('--steps',type=int,default=3000);ap.add_argument('--batch',type=int,default=256,help='states per step (x --adv-samples chains)')
 ap.add_argument('--lr',type=float,default=1e-6,help='INITIAL lr (adaptive)');ap.add_argument('--lr-range',type=float,default=10.,help='adaptive lr clamped to [lr/r, lr*r]')
 ap.add_argument('--kl-target-dim',type=float,default=5e-4,help='per-dim KL target for the adaptive lr (official adaptive_kl .02 over ~28-40 dims)')
 ap.add_argument('--kl-hard-mult',type=float,default=10.,help='safety stop: rolling-mean pre-update per-dim KL > mult x target');ap.add_argument('--kl-stop-window',type=int,default=10)
 ap.add_argument('--old-refresh',type=int,default=50,help='pi_old <- current policy every N steps (0 = never)')
-ap.add_argument('--clip',type=float,default=.2);ap.add_argument('--clip-final',type=float,default=.1)
+ap.add_argument('--clip',type=float,default=.1);ap.add_argument('--clip-final',type=float,default=.1,help='R5/official-align: fixed clip 0.1 (no decay when equal to --clip)')
 ap.add_argument('--anchor',type=float,default=6.);ap.add_argument('--anchor-batch',type=int,default=128)
 ap.add_argument('--adv-samples',type=int,default=4);ap.add_argument('--omega',type=float,default=.7)
 ap.add_argument('--ope-every',type=int,default=25);ap.add_argument('--ope-states',type=int,default=2048)
-ap.add_argument('--grad-clip',type=float,default=1.);ap.add_argument('--milestones',default='50,100,150,300')
+ap.add_argument('--grad-clip',type=float,default=.5);ap.add_argument('--milestones',default='500,1000,2000,3000')
 a=ap.parse_args();setup(4321);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
 MS=sorted(int(x) for x in a.milestones.split(','));ADIM=8*len(JOINTS)
 sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources)
 ck=torch.load(a.critic,map_location='cuda',weights_only=False);stats={k:v.cuda() for k,v in ck['stats'].items()}
 C=Critic(SD,ACT_DIM).cuda();C.load_state_dict(ck['critic']);C.eval().requires_grad_(False)
 p,cp=load_policy(a.policy);p.eval();p.obs_encoder.requires_grad_(False);p.normalizer.requires_grad_(False)
-enc_before={k:v.clone() for k,v in p.obs_encoder.state_dict().items()}
+enc_before={k:v.clone() for k,v in p.obs_encoder.state_dict().items()};norm_before={k:v.clone() for k,v in p.normalizer.state_dict().items()}
 model=p.model
 anc=copy.deepcopy(model).eval().requires_grad_(False)   # KL anchor = ROUND-START policy, frozen for the whole round
 old=copy.deepcopy(model).eval().requires_grad_(False)   # pi_old, refreshed every --old-refresh steps
@@ -122,6 +123,7 @@ for step in range(1,a.steps+1):
         print('KL_SAFETY_STOP',json.dumps(kl_stop),flush=True);append_jsonl(out/'kl_early_stop.jsonl',kl_stop);break
 if not cands or cands[-1]['milestone']!=step:save_candidate(step)
 assert all(torch.equal(v,enc_before[k]) for k,v in p.obs_encoder.state_dict().items()),'encoder changed'
+assert all(torch.equal(v,norm_before[k]) for k,v in p.normalizer.state_dict().items()),'normalizer changed'
 def _mm(k):v=[r_[k] for r_ in ROWS];return dict(max=max(v),mean=sum(v)/len(v),last=v[-1])
 rep=dict(status='done',updated=cst(),steps_run=step,candidates=cands,clip_active_steps=clip_steps,max_clip_frac=max_clip,clip_never_active=clip_steps==0,
          kl_early_stop=kl_stop,pi_old_refreshes=refreshes,critic_v_auc=VAUC,

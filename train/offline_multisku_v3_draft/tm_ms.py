@@ -1,3 +1,4 @@
+# [official-align] Dynamics 7/5 ensemble DEFERRED (reference-only; cost/benefit low until AM-Q gates promote).
 # [offline_multisku_v1_draft] NEW file, multi-SKU copy of offline_stage2_v3_nominal_20261017/transition_model_ic7.py (STEP 2: transition model,
 #   REFERENCE ONLY - feeds the logged AM-Q number, never a decision). Changes: input += raw sku_cond (4); same data as the critic
 #   (demos + all success/fail rollouts); MS_TRAIN_ALL; --batch default 4096 (base 1024).

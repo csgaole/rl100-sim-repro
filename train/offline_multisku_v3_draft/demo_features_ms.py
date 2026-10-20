@@ -6,9 +6,9 @@ ids, sku (E,) names, sku_cond (E,4) raw [L,W,H,mass]/[.30,.25,.15,.60] (checked 
 from ms_common import *
 import argparse
 ap=argparse.ArgumentParser();ap.add_argument('--policy',default=str(START_POLICY));ap.add_argument('--limit',type=int,default=0)
-ap.add_argument('--cache',default='/data02/kemove/sku5-flip-demonstrations/cache/bc_v1');a=ap.parse_args()
+ap.add_argument('--cache',default='/data02/kemove/sku5-flip-demonstrations/cache/bc_v1');ap.add_argument('--force',action='store_true',help='allow overwrite of existing demo_*.npz (post-IL re-extract)');a=ap.parse_args()
 setup(0);p,cp=load_policy(a.policy);p.eval();C=Path(a.cache);(OUT/'data').mkdir(parents=True,exist_ok=True)
-assert (OUT/'data'/'demo_train.npz').exists()==False,'refuse overwrite demo features'
+assert a.force or (OUT/'data'/'demo_train.npz').exists()==False,'refuse overwrite demo features (pass --force after IL)'
 EXPECT={'train':400,'validation':50}
 for split in ['train','validation']:
     info=json.loads((C/f'{split}_complete.json').read_text());ids=info['ids'];assert len(ids)==EXPECT[split],(split,len(ids))

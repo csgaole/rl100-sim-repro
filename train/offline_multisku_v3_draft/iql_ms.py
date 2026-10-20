@@ -1,3 +1,4 @@
+# [offline_multisku_v3_draft official-align] IQL: lr 1e-5, tau 0.0025, batch 256, Critic Q1024+LN/V512; encoder N/A (precomputed feats).
 # [offline_multisku_v1_draft] NEW file, multi-SKU copy of offline_stage2_v3_nominal_20261017/iql_wide_fix.py (STEP 1: critic).
 # Changes: critic state = [z_{t-1}, z_t, clock, sku_cond] (SD=2*1568+1+4); data = demos + ALL rollouts so far (success AND failure);
 #   MS_TRAIN_ALL=1 -> trains on every episode (held-out subset = in-sample diagnostic); --batch default 2048 (base 512);
@@ -6,8 +7,8 @@
 from ms_common import *
 import argparse,copy,torch.nn.functional as Fn
 ap=argparse.ArgumentParser();ap.add_argument('--sources',required=True,help='json list of [kind,path]');ap.add_argument('--out',required=True)
-ap.add_argument('--steps',type=int,default=100000);ap.add_argument('--batch',type=int,default=2048);ap.add_argument('--eval-every',type=int,default=5000)
-ap.add_argument('--lr',type=float,default=1e-4);ap.add_argument('--expectile',type=float,default=.7)
+ap.add_argument('--steps',type=int,default=100000);ap.add_argument('--batch',type=int,default=256);ap.add_argument('--eval-every',type=int,default=5000)
+ap.add_argument('--lr',type=float,default=1e-5);ap.add_argument('--expectile',type=float,default=.7);ap.add_argument('--tau',type=float,default=.0025,help='Polyak tau (R5/official-align 0.0025)')
 a=ap.parse_args();setup(1234);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
 sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources);stats=feat_stats(D)
 train_e=torch.nonzero(train_mask(D)).flatten();held_e=torch.nonzero(D['heldout']).flatten()
@@ -35,6 +36,14 @@ def evaluate():
     lab=D['success'][e].cpu().numpy()>0;vv=v.cpu().numpy();tt=t.cpu().numpy();ec=e.cpu().numpy();ro=ro_all[ec];sk=sk_all[ec]
     for ph in [0,10,20,30,45,59]:res[f'v_auc_t{ph}_rollout']=auc(vv[(tt==ph)&ro],lab[(tt==ph)&ro])
     res['v_auc_all_rollout']=auc(vv[ro],lab[ro])
+    # action-sensitivity of Q: same states, perturb actions with N(0,0.05) noise on joints; large std => Q depends on a
+    with torch.no_grad():
+        ee2=held_e[:min(512,len(held_e))];tt2=torch.randint(0,CHUNKS,(len(ee2),),device='cuda')
+        ss=critic_state(D,stats,ee2,tt2);aa=D['AJ'][ee2,tt2]
+        q0=C.qmin(ss,aa);qs=[]
+        for _ in range(4):
+            ap=aa.clone();ap=ap+0.05*torch.randn_like(ap);qs.append(C.qmin(ss,ap))
+        res['q_within_state_std']=torch.stack(qs,0).std(0).mean().item();res['q_mean']=q0.mean().item()
     for s in SKUS:res[f'v_auc_t20_{s}']=auc(vv[(tt==20)&ro&(sk==s)],lab[(tt==20)&ro&(sk==s)])
     C.train();return res
 t0=time.time();row={}
@@ -47,7 +56,7 @@ for step in range(1,a.steps+1):
     q1,q2=C.q(s,aa);ql=Fn.mse_loss(q1,target)+Fn.mse_loss(q2,target);oq.zero_grad(set_to_none=True);ql.backward();oq.step()
     if step%2==0:
         with torch.no_grad():
-            for pt,pc in zip(T.parameters(),C.parameters()):pt.mul_(1-.005).add_(.005*pc)
+            for pt,pc in zip(T.parameters(),C.parameters()):pt.mul_(1-a.tau).add_(a.tau*pc)
     if step%a.eval_every==0 or step==a.steps:
         row=dict(step=step,v_loss=vl.item(),q_loss=ql.item(),elapsed_s=time.time()-t0,**evaluate())
         append_jsonl(out/'metrics.jsonl',row);write_json(out/'status.json',dict(status='training',total_steps=a.steps,updated=cst(),summary=summary,**row));print(json.dumps(row),flush=True)

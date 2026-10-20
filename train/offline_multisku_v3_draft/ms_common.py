@@ -1,3 +1,4 @@
+# [offline_multisku_v3_draft official-align 2026-10-20] Critic Q1024+LN / V512; GAMMA=0.999/chunk.
 # [offline_multisku_v3_draft 2026-10-20] copy of v2 ms_common.py; only change: SKU set configurable via MS_SKUS (default unchanged).
 # [offline_multisku_v1_draft 2026-10-19] Multi-SKU shared utilities. NEW file; merges (copies of) the base pipeline's
 #   offline_stage2_v3_nominal_20261017/{s2common_v3.py, s2common_v3fix.py, wcommon_fix.py} (no edits to those files).
@@ -26,7 +27,7 @@ CAMS=('global','left_wrist','right_wrist');JOINTS=[0,1,2,3,4,5,7,8,9,10,11,12]
 START_POLICY=Path(os.environ.get('MS_START_POLICY','/data02/kemove/rl100-sim-repro/runs/bc_multisku_v1_20261018/s43_lr2e-4_mb256/development_v2/candidate_0300.pt'))
 OUT=Path(os.environ['S2_OUT']) if 'S2_OUT' in os.environ else None
 DEMO_DIR=(OUT/'data') if OUT else None
-FEAT=1568;SKU_DIM=4;ACT_DIM=96;CHUNKS=60;GAMMA=.99
+FEAT=1568;SKU_DIM=4;ACT_DIM=96;CHUNKS=60;GAMMA=.999  # v3-official: closer to RL-100/R5 0.999; still PER-CHUNK (not per-frame)
 STD_MIN=.0067;STD_MAX=float(os.environ.get('S2_STD_MAX','0.1'))
 SD=2*FEAT+1+SKU_DIM   # critic state dim: [z_{t-1}, z_t, clock, sku_cond]
 TRAIN_ALL=os.environ.get('MS_TRAIN_ALL','1')=='1'
@@ -85,15 +86,19 @@ def sample_chain(model,p,cond,gen=None,stochastic=True,trace=False,noise=None):
 def joint_flat(x):return x[...,JOINTS].flatten(-2)
 
 # ---------------- observation encoding (frozen encoder; adds sku_cond) ----------------
-@torch.no_grad()
-def encode_frames(p,frames,sku_cond):
-    """frames: cam->(B,3,240,320) uint8, 'proprio'->(B,28); sku_cond: raw (4,) or (B,4). Returns (B,FEAT)."""
+def encode_frames_grad(p,frames,sku_cond):
+    """TRAINABLE encode (gradients flow to obs_encoder). Same API as encode_frames."""
     obs={c:torch.as_tensor(np.ascontiguousarray(frames[c]),device='cuda').float()/255 for c in CAMS}
     B=obs[CAMS[0]].shape[0]
     obs['agent_pos']=torch.as_tensor(np.asarray(frames['proprio']),device='cuda',dtype=torch.float32)
     sk=np.asarray(sku_cond,np.float32);sk=np.broadcast_to(sk,(B,SKU_DIM)) if sk.ndim==1 else sk
     obs['sku_cond']=torch.as_tensor(np.ascontiguousarray(sk),device='cuda',dtype=torch.float32)
     return p.obs_encoder(p.normalizer.normalize(obs))
+
+@torch.no_grad()
+def encode_frames(p,frames,sku_cond):
+    """Inference/collection encode (no grad)."""
+    return encode_frames_grad(p,frames,sku_cond)
 
 # ---------------- dataset ----------------
 def load_dataset_w(sources,device='cuda'):
@@ -133,13 +138,20 @@ def policy_cond(D,e,t):
     return torch.cat([D['F'][e,(t-1).clamp(min=0)],D['F'][e,t]],1)   # features already contain normalized sku_cond
 
 # ---------------- critic ----------------
-def mlp(i,o,h=512,depth=3):
+def mlp(i,o,h=512,depth=3,layernorm=False):
+    """MLP; optional LayerNorm after each hidden Linear (R5/official-style Q nets)."""
     layers=[];d=i
-    for _ in range(depth):layers+=[nn.Linear(d,h),nn.ReLU()];d=h
+    for _ in range(depth):
+        layers.append(nn.Linear(d,h))
+        if layernorm:layers.append(nn.LayerNorm(h))
+        layers.append(nn.ReLU());d=h
     layers.append(nn.Linear(d,o));return nn.Sequential(*layers)
 class Critic(nn.Module):
-    def __init__(self,sd,ad,h=512,depth=3):
-        super().__init__();self.q1=mlp(sd+ad,1,h,depth);self.q2=mlp(sd+ad,1,h,depth);self.v=mlp(sd,1,h,depth)
+    """R5/official-align: Q hidden 1024 depth 3 + LayerNorm; V hidden 512 depth 3 (no LN)."""
+    def __init__(self,sd,ad,qh=1024,vh=512,depth=3):
+        super().__init__()
+        self.q1=mlp(sd+ad,1,qh,depth,layernorm=True);self.q2=mlp(sd+ad,1,qh,depth,layernorm=True)
+        self.v=mlp(sd,1,vh,depth,layernorm=False)
     def q(self,s,a):
         x=torch.cat([s,a],1);return self.q1(x).squeeze(-1),self.q2(x).squeeze(-1)
     def qmin(self,s,a):
