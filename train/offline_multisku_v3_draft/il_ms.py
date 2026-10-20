@@ -131,7 +131,7 @@ for step in range(1,a.steps+1):
 if ema_m is not None:
     p.model.load_state_dict(ema_m);p.obs_encoder.load_state_dict(ema_e)
 assert all(torch.equal(v,norm_before[k]) for k,v in p.normalizer.state_dict().items()),'normalizer changed'
-enc_changed=any((p.obs_encoder.state_dict()[k]-enc0[k]).abs().max().item()>0 for k in enc0 if enc0[k].dtype.is_floating_point)
+enc_changed=any(((p.obs_encoder.state_dict()[k]-enc0[k]).abs().sum()>0).item() for k in enc0 if enc0[k].dtype.is_floating_point and enc0[k].numel()>0)
 save_policy(p,cp,out,dict(stage='offline_multisku_il_v3_official',source_policy=a.policy,lr=a.lr,encoder_lr=a.encoder_lr,
     steps=a.steps,encoder_trained=True,encoder_changed=enc_changed,normalizer_frozen=True,live_demo_encode=HAVE,last_enc_grad=last_eg))
 write_json(status_path,dict(status='done',updated=cst(),out=str(out),held_loss=best,final_step=step,final=ROWS[-1] if ROWS else {},
