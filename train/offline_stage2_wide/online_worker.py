@@ -43,7 +43,7 @@ def run_batch(eps):
     try:
         hist=[[o,o] for o in (env.observe() for env in E)]
         gens=[torch.Generator(device='cuda').manual_seed(int(ep['seed'])+30000000) for ep in eps]
-        S=[dict(up=[],bot=[],stable=[],drop=False,peak=0.,alive=True,reason=None,chunks=0,cond=[],xs=[],ys=[],lp=[]) for _ in E]
+        S=[dict(up=[],bot=[],stable=[],drop=False,peak=0.,alive=True,reason=None,chunks=0,cond=[],xs=[],ys=[],lp=[],fr=[]) for _ in E];STORE=bool(J.get('store_obs'))
         p.noise_scheduler.set_timesteps(K);TS=p.noise_scheduler.timesteps
         for chunk in range(60):
             act=[i for i in range(N) if S[i]['alive']]
@@ -58,7 +58,7 @@ def run_batch(eps):
             acts=p.normalizer['action'].unnormalize(x).cpu().numpy();acts[:,:,[6,13]]=.012;assert np.isfinite(acts).all()
             for j,i in enumerate(act):
                 env=E[i];e=env.physics;m,d=e.model,e.data;body=m.body('parcel').id;s_=S[i]
-                s_['cond'].append(C[j]);s_['xs'].append(XS[j]);s_['ys'].append(YS[j]);s_['lp'].append(LP[j])
+                s_['cond'].append(C[j]);(s_['fr'].append(hist[i][-1]) if STORE else None);s_['xs'].append(XS[j]);s_['ys'].append(YS[j]);s_['lp'].append(LP[j])
                 for aa in acts[j]:
                     step_policy_action(e,aa,p.action_semantics);s=task_state(e);v=np.zeros(6);mujoco.mj_objectVelocity(m,d,mujoco.mjtObj.mjOBJ_BODY,body,v,0)
                     s_['stable'].append(s['label_up']>.98 and s['bottom']>.79 and np.linalg.norm(v[3:])<.03 and np.linalg.norm(v[:3])<.15)
@@ -77,14 +77,14 @@ def run_batch(eps):
             if succ:
                 cnd=(up>.98)&(bot>.79);bad=np.nonzero(~cnd)[0];ks=int(bad[-1])+1 if len(bad) else 0;T=min(ks//8,s_['chunks']-1)
             out.append(dict(meta=dict(ep,success=succ,reason=reason,chunks_run=s_['chunks'],T=T,k_star=ks,peak_force_N=float(s_['peak'])),
-                cond=np.stack(s_['cond'][:T+1]),xs=np.stack(s_['xs'][:T+1]),ys=np.stack(s_['ys'][:T+1]),lp=np.stack(s_['lp'][:T+1])))
+                cond=np.stack(s_['cond'][:T+1]),xs=np.stack(s_['xs'][:T+1]),ys=np.stack(s_['ys'][:T+1]),lp=np.stack(s_['lp'][:T+1]),**({('rgb_'+k):np.stack([np.asarray(fr['rgb'][k]) for fr in s_['fr'][:T+1]]).astype(np.uint8) for k in CAMS} if STORE else {}),**({'prop':np.stack([np.asarray(fr['proprio']) for fr in s_['fr'][:T+1]]).astype(np.float32)} if STORE else {})))
         return out
     finally:
         for env in E:env.close()
 def save(path,res):
     L=[len(r['cond']) for r in res];tmp=str(path)+'.tmp.npz'
-    np.savez(tmp,meta=np.array(json.dumps([r['meta'] for r in res])),ep_len=np.array(L),cond=np.concatenate([r['cond'] for r in res]),
-         xs=np.concatenate([r['xs'] for r in res]).astype(np.float32),ys=np.concatenate([r['ys'] for r in res]).astype(np.float32),lp=np.concatenate([r['lp'] for r in res]).astype(np.float32))
+    (np.savez_compressed if 'prop' in res[0] else np.savez)(tmp,meta=np.array(json.dumps([r['meta'] for r in res])),ep_len=np.array(L),cond=np.concatenate([r['cond'] for r in res]),
+         xs=np.concatenate([r['xs'] for r in res]).astype(np.float32),ys=np.concatenate([r['ys'] for r in res]).astype(np.float32),lp=np.concatenate([r['lp'] for r in res]).astype(np.float32),**{k:np.concatenate([r[k] for r in res]) for k in res[0] if k.startswith('rgb_') or k=='prop'})
     os.replace(tmp,path)
 # same job protocol as batch_worker.py (jobs.json, O_EXCL claim files, done markers; resumable)
 OUT=Path(J['out'])

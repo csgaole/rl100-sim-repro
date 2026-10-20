@@ -28,6 +28,7 @@ ap.add_argument('--qc-every',type=int,default=2);ap.add_argument('--qc-n',type=i
 ap.add_argument('--keep-last',type=int,default=3);ap.add_argument('--ddim-check',type=int,default=0,help='N>0: only run the K=5 vs K=10 stochastic-sampler check on N eps and exit')
 ap.add_argument('--smoke',action='store_true')
 ap.add_argument('--fix-encoder',action='store_true',help='freeze vision encoder (old behavior); default trains encoder+UNet')
+ap.add_argument('--enc-mb',type=int,default=64,help='encoder re-encode micro-batch (samples) for live-encoder PPO')
 ap.add_argument('--encoder-lr-scale',type=float,default=1.0,help='encoder LR = lr * scale when not --fix-encoder; 1.0 = single Adam(policy) like official; 0.1 matches some official online bash overrides')
 
 a=ap.parse_args();OUT=Path(a.out);OUT.mkdir(parents=True,exist_ok=True);PY=sys.executable;setup(0)
@@ -79,10 +80,12 @@ def train_eps(it,n):
         dx,dy,yw=init_pose(s,pos/1000,yaw);E.append(dict(seed=s,dx=dx,dy=dy,yaw_deg=yw,cell='nominal' if pos==5 else f'p{pos}_y{yaw}',pos_half_mm=pos,yaw_half_deg=yaw))
     return E
 def load_rollouts(d):
-    M=[];C=[];X=[];Y=[];LP=[];L=[]
+    global ROLL_OBS
+    M=[];C=[];X=[];Y=[];LP=[];L=[];OB=[]
     for f in sorted((d/'data').glob('*.npz')):
         if '.tmp' in f.name:continue
-        z=np.load(f);M+=json.loads(str(z['meta']));C.append(z['cond']);X.append(z['xs']);Y.append(z['ys']);LP.append(z['lp']);L.append(z['ep_len'])
+        z=np.load(f);M+=json.loads(str(z['meta']));C.append(z['cond']);X.append(z['xs']);Y.append(z['ys']);LP.append(z['lp']);L.append(z['ep_len']);OB.append({k:z[k] for k in z.files if k.startswith('rgb_') or k=='prop'} if 'prop' in z.files else None)
+    ROLL_OBS=pack_rollout_obs(OB,np.concatenate(L)) if L else None
     return M,np.concatenate(C),np.concatenate(X),np.concatenate(Y),np.concatenate(LP),np.concatenate(L)
 def rollout_stats(M):
     out={}
@@ -108,7 +111,7 @@ if a.ddim_check:
     R['drop_pts']=100*(R[10]['rate']-R[5]['rate']);R['speedup']=R[10]['wall_s']/R[5]['wall_s'];write_json(OUT/'ddim_check.json',R);log(f'DDIM check: drop {R["drop_pts"]:.1f} pts, speedup x{R["speedup"]:.2f}');sys.exit(0)
 
 # ---------------- models ----------------
-p,cp=load_policy(a.start);model=configure_online_policy(p,fix_encoder=a.fix_encoder)
+p,cp=load_policy(a.start);model=configure_online_policy(p,fix_encoder=a.fix_encoder);ROLL_OBS=None
 p1,_=load_policy(STAGE1);ref=p1.model.eval().requires_grad_(False)
 start_model=copy.deepcopy(model).eval().requires_grad_(False)
 anc=start_model if a.anchor_ref=='start' else ref  # Stage-1 anchor: gradient ~16x the PG gradient at the start policy (KL~7), would drag the policy back to Stage-1
@@ -194,6 +197,8 @@ def fit_v(Cn,tgt,epochs):
 def ev(pred,tgt):return float(1-(tgt-pred).var()/tgt.var().clamp_min(1e-8))
 def train_iter(it,M,C,X,Y,LP,L):
     global VS,FIX_ROLL
+    LIVE=(not a.fix_encoder) and ROLL_OBS is not None
+    if not a.fix_encoder and ROLL_OBS is None:log('WARNING: encoder unfrozen but rollouts have no stored obs -> stored cond, NO encoder gradient')
     t0=time.time();rew,done,epi=gae(M,C,L);Ct=torch.tensor(C,device='cuda').float()
     if VS is None:VS=dict(mu=Ct.mean(0),sd=Ct.std(0).clamp_min(1e-3))
     Cn=(Ct-VS['mu'])/VS['sd']
@@ -215,13 +220,13 @@ def train_iter(it,M,C,X,Y,LP,L):
     Xt=torch.tensor(X,device='cuda');Yt=torch.tensor(Y,device='cuda');LPt=torch.tensor(LP,device='cuda')
     p.noise_scheduler.set_timesteps(a.K);TS=[t.to('cuda') for t in p.noise_scheduler.timesteps];steps=list(range(a.K))[-a.train_last:] if a.train_last else list(range(a.K))
     nom_idx=torch.tensor([i for i,e in enumerate(epi) if M[e]['cell']=='nominal'],device='cuda')
-    m=dict(init_logratio_absmean=None,init_logratio_max=None,pg_loss=0.,clip_frac=0.,approx_kl=0.,anchor_kl=0.,grad_norm=0.,n_updates=0,max_abs_logratio=0.,early_stop=None);n=len(Ct);g=torch.Generator(device='cuda').manual_seed(1000+int(it))
+    m=dict(init_logratio_absmean=None,init_logratio_max=None,pg_loss=0.,clip_frac=0.,approx_kl=0.,anchor_kl=0.,grad_norm=0.,enc_grad_norm=0.,live_encoder=bool(LIVE),n_updates=0,max_abs_logratio=0.,early_stop=None);n=len(Ct);g=torch.Generator(device='cuda').manual_seed(1000+int(it))
     stop=False
     for ep in range(a.epochs):
         if stop:break
         perm=torch.randperm(n,device='cuda',generator=g)
         for i in range(0,n,a.mb):
-            j=perm[i:i+a.mb];cond=Ct[j];aj=adv[j];zero_policy_opts(opt,enc_opt);cf=0.;ak=0.;p.noise_scheduler.set_timesteps(a.K)
+            j=perm[i:i+a.mb];cond=live_cond(p,ROLL_OBS,j,a.enc_mb) if LIVE else Ct[j];aj=adv[j];zero_policy_opts(opt,enc_opt);cf=0.;ak=0.;p.noise_scheduler.set_timesteps(a.K)
             for s in steps:
                 mean,std=kernel(p,model(Xt[j,s],TS[s],global_cond=cond),TS[s],Xt[j,s]);logr=logprob(mean,std,Yt[j,s])-LPt[j,s]
                 if m['init_logratio_absmean'] is None:m['init_logratio_absmean']=logr.abs().mean().item();m['init_logratio_max']=logr.abs().max().item()
@@ -236,9 +241,10 @@ def train_iter(it,M,C,X,Y,LP,L):
                 mn,_=kernel(p,model(xd[s],T10[s],global_cond=cd),T10[s],xd[s]);kl=(.5*((mn-mr)/sr).square())[...,JOINTS].mean();(a.anchor*kl).backward();kls+=kl.item()
             if ak>a.target_kl and m['n_updates']>0:  # standard PPO KL early stop (measured on this minibatch before stepping)
                 m['early_stop']=dict(epoch=ep,minibatch=i//a.mb,approx_kl=ak);zero_policy_opts(opt,enc_opt);stop=True;break
+            if LIVE:m['enc_grad_norm']+=encoder_backward(p,ROLL_OBS,j,cond,a.enc_mb)
             gn=nn.utils.clip_grad_norm_(policy_grad_params(p,a.fix_encoder),a.grad_clip);step_policy_opts(opt,enc_opt)
             m['clip_frac']+=cf;m['approx_kl']+=ak;m['anchor_kl']+=kls;m['grad_norm']+=float(gn);m['n_updates']+=1
-    for k in ['pg_loss','clip_frac','approx_kl','anchor_kl','grad_norm']:m[k]/=max(m['n_updates'],1)
+    for k in ['pg_loss','clip_frac','approx_kl','anchor_kl','grad_norm','enc_grad_norm']:m[k]/=max(m['n_updates'],1)
     return dict(m,samples=n,v_loss=vloss,v_warm_loss=warm,v_ev_pre=ev_pre,v_ev_pre_vs_mc=ev_pre_mc,v_ev_post=ev_post,adv_mean_raw=float(A.mean()),adv_std_raw=float(A.std()),
         adv_pos_frac=float((A>0).mean()),ret_mean=float(mcn.mean()),**devs(),train_wall_s=time.time()-t0)
 
@@ -256,7 +262,7 @@ def main():
         if I.get('done'):continue
         t0=time.time();pol=ckpt_path(it-1);assert pol.exists(),pol
         d=OUT/'rollouts'/f'it{it:03d}';E=train_eps(it,a.eps)
-        tc=run_jobs('online_worker.py',d,dict(policy=str(pol),K=a.K,jobs=shards(E,'r')),f'it{it}:collect',d)
+        tc=run_jobs('online_worker.py',d,dict(policy=str(pol),K=a.K,jobs=shards(E,'r'),**({'store_obs':True} if not a.fix_encoder else {})),f'it{it}:collect',d)
         M,C,X,Y,LP,L=load_rollouts(d);I['rollouts']=rollout_stats(M);log(f'it{it} collect {I["rollouts"]["wide"]} wide, {I["rollouts"]["nominal"]} nominal, fails {I["rollouts"]["fails"]}, mean chunks {I["rollouts"]["mean_chunks"]:.1f}, {tc:.0f}s');save_state()
         if RESUMED_IT>=it and ckpt_path(it).exists():
             # crash after this iteration's update (e.g. in its full gate): never re-train on the same data

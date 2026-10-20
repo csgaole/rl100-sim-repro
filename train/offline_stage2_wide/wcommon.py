@@ -98,3 +98,30 @@ def step_policy_opts(opt, enc_opt):
     if enc_opt is not None:
         enc_opt.step()
 
+
+# ---------------- online RL: live re-encoding of stored rollout obs (official obs2feature style) ----------------
+def pack_rollout_obs(OB,L):
+    """OB: per-file dicts {rgb_<cam>:(n,H,W,3) uint8, prop:(n,28)} or None. Frame i = obs at chunk start of sample i;
+    policy cond of sample i = enc([frame prev(i), frame i]) with prev(i)=i-1 (= i at episode start, as hist=[o,o])."""
+    if not OB or any(o is None for o in OB):return None
+    rgb={c:np.concatenate([o['rgb_'+c] for o in OB]) for c in CAMS};prop=np.concatenate([o['prop'] for o in OB]).astype(np.float32)
+    Lc=np.asarray(L);st=np.concatenate([[0],np.cumsum(Lc)[:-1]]).astype(np.int64);prev=np.arange(len(prop))-1;prev[st]=st
+    assert len(prop)==int(Lc.sum())
+    return dict(rgb=rgb,prop=prop,prev=prev)
+def encode_rollout_obs(p,R,idx):
+    idx=np.asarray(idx);both=np.stack([R['prev'][idx],idx],1).reshape(-1)
+    o={c:torch.from_numpy(R['rgb'][c][both]).cuda().permute(0,3,1,2).float()/255 for c in CAMS}
+    o['agent_pos']=torch.from_numpy(R['prop'][both]).cuda().float()
+    return p.obs_encoder(p.normalizer.normalize(o)).reshape(len(idx),-1)
+def live_cond(p,R,j,enc_mb=64):
+    """Current-encoder cond (no graph) as a grad-requiring leaf; PPO backward accumulates d loss/d cond into .grad,
+    encoder_backward then pushes it through the encoder in enc_mb chunks (bounded activation memory)."""
+    idx=j.cpu().numpy()
+    with torch.no_grad():c=torch.cat([encode_rollout_obs(p,R,idx[s:s+enc_mb]) for s in range(0,len(idx),enc_mb)])
+    return c.requires_grad_(True)
+def encoder_backward(p,R,j,cond,enc_mb=64):
+    if cond.grad is None:return 0.
+    idx=j.cpu().numpy();g=cond.grad
+    for s in range(0,len(idx),enc_mb):encode_rollout_obs(p,R,idx[s:s+enc_mb]).backward(g[s:s+enc_mb])
+    gs=[q.grad.norm() for q in p.obs_encoder.parameters() if q.grad is not None]
+    return float(torch.stack(gs).norm()) if gs else 0.
