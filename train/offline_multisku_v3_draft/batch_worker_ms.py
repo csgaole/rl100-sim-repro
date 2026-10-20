@@ -1,3 +1,4 @@
+# [P0] collect stores RGB+prop (61 frames) + feat_ckpt/feat_spec stamp for full re-encode.
 # [offline_multisku_v1_draft] NEW file, multi-SKU copy of offline_stage2_v3_nominal_20261017/batch_worker_fix.py.
 # Changes: multi-SKU loader (evaluate_bc_multisku.load_policy); each episode carries 'sku' -> LogisticsSortingEnv(sku=...) scene and
 #   obs['sku_cond'] from the checkpoint sku_cond_table (SKUs may be mixed inside one lock-step shard); rows/eps meta store sku, sku_cond, heldout.
@@ -29,9 +30,12 @@ def encode(hist,N,SK):
     return p.obs_encoder(p.normalizer.normalize(o))
 @torch.inference_mode()
 def run_batch(eps,mode,collect):
+    """P0: when collect, also keep per-episode RGB+proprio (61 frames) for later full re-encode."""
     E=[init_env(ep) for ep in eps];N=len(E);SK=np.stack([np.asarray(p.sku_table[ep['sku']],np.float32) for ep in eps])
+    STORE=bool(JF.get('store_obs', True))  # default ON for collect re-encode
     try:
         obs=[env.observe() for env in E];hist=[[o,o] for o in obs]
+        obs_seq=[[o] for o in obs]  # frame 0
         gens=[torch.Generator(device='cuda').manual_seed(ep['seed']+(10000000 if mode=='det' else 20000000)) for ep in eps]
         st=[dict(stable=[],drop=False,peak=0.,maxup=-9.,s=None) for _ in E];feats=[];acts_n=[]
         for chunk in range(60):
@@ -54,20 +58,34 @@ def run_batch(eps,mode,collect):
                     step_policy_action(e,aa,p.action_semantics);s=task_state(e);v=np.zeros(6);mujoco.mj_objectVelocity(m,d,mujoco.mjtObj.mjOBJ_BODY,body,v,0)
                     S['stable'].append(s['label_up']>.98 and s['bottom']>.79 and np.linalg.norm(v[3:])<.03 and np.linalg.norm(v[:3])<.15)
                     S['drop']|=s['bottom']<.74;S['peak']=max(S['peak'],max(s['forces']));S['maxup']=max(S['maxup'],s['label_up'])
-                S['s']=s;hist[i]=[hist[i][-1],env.observe()]
+                S['s']=s; neo=env.observe(); hist[i]=[hist[i][-1],neo]
+                if collect and STORE: obs_seq[i].append(neo)
         if collect:feats.append(encode(hist,N,SK).reshape(N,2,-1)[:,1].float().cpu().numpy())
         rows=[]
         for i,(ep,S) in enumerate(zip(eps,st)):
             s=S['s'];out=assess_task(s['label_up'],s['bottom'],S['drop'],len(S['stable'])==480,S['stable'])
             out={k:(v.item() if hasattr(v,'item') else v) for k,v in out.items()}
-            out['loose_success']=out['success'];out['loose_reason']=out['reason'];# v2 CRITERION (Bill 2026-10-20, all SKUs): success = complete AND final label_up>.98 AND never fell to floor (bottom<.74 at any step).
-            # NO velocity/settle terms; box carried away on the outfeed belt counts. Old strict result kept as diagnostics: strict_success/strict_reason/stable_steps_last_48.
+            out['loose_success']=out['success'];out['loose_reason']=out['reason']
             succ=bool(len(S["stable"])==480 and not S["drop"] and float(s["label_up"])>.98)
             out["success"]=succ;out["task_success"]=succ;out["success_criteria_version"]="flip_up_no_floor_v3"
             out["reason"]="success" if succ else ("drop" if S["drop"] else ("wrong_face" if float(s["label_up"])<=.98 else "incomplete"))
             rr=dict(ep,**out);rr.update(sampler=mode,sku_cond=SK[i].tolist(),peak_force_N=float(S['peak']),final_up=float(s['label_up']),max_label_up=float(S['maxup']));rows.append(rr)
-        if collect:return rows,np.stack(feats,1),np.stack(acts_n,1)
-        return rows,None,None
+        if collect:
+            rgb_pack=None
+            if STORE:
+                # (N,61,3,H,W) CHW uint8 + prop (N,61,28)
+                rgb_pack={}
+                for ci,c in enumerate(CAMS):
+                    rgb_pack[f'rgb_{c}']=np.stack([
+                        np.stack([np.asarray(fr['rgb'][c]).transpose(2,0,1) for fr in obs_seq[i]],0).astype(np.uint8)
+                        for i in range(N)],0)
+                rgb_pack['prop']=np.stack([
+                    np.stack([np.asarray(fr['proprio'],np.float32) for fr in obs_seq[i]],0)
+                    for i in range(N)],0)
+                for i in range(N):
+                    assert rgb_pack['prop'][i].shape==(61,28), rgb_pack['prop'][i].shape
+            return rows,np.stack(feats,1),np.stack(acts_n,1),rgb_pack
+        return rows,None,None,None
     finally:
         for env in E:env.close()
 for d in ['claims','done','rows','eps']:(OUT/d).mkdir(parents=True,exist_ok=True)
@@ -76,12 +94,21 @@ for j in JF['jobs']:
     if (OUT/'done'/k).exists():continue
     try:fd=os.open(OUT/'claims'/k,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,str(a.wid).encode());os.close(fd)
     except FileExistsError:continue
-    t=time.time();rows,F,A=run_batch(j['episodes'],j['mode'],j['kind']=='collect')
-    for r in rows:r.update(policy=JF['policy'],batch_wall_s=round(time.time()-t,1))
+    t=time.time();rows,F,A,RGB=run_batch(j['episodes'],j['mode'],j['kind']=='collect')
+    from ms_common import feat_meta_for_policy
+    fm=feat_meta_for_policy(JF['policy'])
+    for r in rows:r.update(policy=JF['policy'],batch_wall_s=round(time.time()-t,1),**fm)
     if F is not None:
         for i,r in enumerate(rows):
             f=OUT/'eps'/f"ep_{r['seed']}.npz";tmp=OUT/'eps'/f"ep_{r['seed']}.tmp.npz"
-            np.savez(tmp,meta=np.array(json.dumps(r)),feats=F[i],actions=A[i]);tmp.replace(f)
+            kw=dict(meta=np.array(json.dumps(r)),feats=F[i],actions=A[i])
+            if RGB is not None:
+                for c in CAMS: kw[f'rgb_{c}']=RGB[f'rgb_{c}'][i]
+                kw['prop']=RGB['prop'][i]
+                np.savez_compressed(tmp, **kw)
+            else:
+                np.savez(tmp, **kw)
+            tmp.replace(f)
     with open(OUT/'rows'/f'{k}.jsonl','w') as f:
         for r in rows:f.write(json.dumps(r)+'\n')
     (OUT/'done'/k).write_text(str(a.wid));print(time.strftime('%H:%M:%S'),'job',k,j['mode'],sum(bool(r['success']) for r in rows),'/',len(rows),f'{time.time()-t:.0f}s',flush=True)

@@ -25,7 +25,7 @@ ap.add_argument('--ope-every',type=int,default=25);ap.add_argument('--ope-states
 ap.add_argument('--grad-clip',type=float,default=.5);ap.add_argument('--milestones',default='500,1000,2000,3000')
 a=ap.parse_args();setup(4321);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
 MS=sorted(int(x) for x in a.milestones.split(','));ADIM=8*len(JOINTS)
-sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources)
+sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources, feat_context='PPO')
 ck=torch.load(a.critic,map_location='cuda',weights_only=False);stats={k:v.cuda() for k,v in ck['stats'].items()}
 C=Critic(SD,ACT_DIM).cuda();C.load_state_dict(ck['critic']);C.eval().requires_grad_(False)
 p,cp=load_policy(a.policy);p.eval();p.obs_encoder.requires_grad_(False);p.normalizer.requires_grad_(False)

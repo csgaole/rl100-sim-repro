@@ -1,3 +1,4 @@
+# [P0] IQL refuses mixed/missing feat_ckpt/feat_spec (load_dataset_w assert).
 # [offline_multisku_v3_draft official-align] IQL: lr 1e-5, tau 0.0025, batch 256, Critic Q1024+LN/V512; encoder N/A (precomputed feats).
 # [offline_multisku_v1_draft] NEW file, multi-SKU copy of offline_stage2_v3_nominal_20261017/iql_wide_fix.py (STEP 1: critic).
 # Changes: critic state = [z_{t-1}, z_t, clock, sku_cond] (SD=2*1568+1+4); data = demos + ALL rollouts so far (success AND failure);
@@ -10,7 +11,7 @@ ap=argparse.ArgumentParser();ap.add_argument('--sources',required=True,help='jso
 ap.add_argument('--steps',type=int,default=100000);ap.add_argument('--batch',type=int,default=256);ap.add_argument('--eval-every',type=int,default=5000)
 ap.add_argument('--lr',type=float,default=1e-5);ap.add_argument('--expectile',type=float,default=.7);ap.add_argument('--tau',type=float,default=.0025,help='Polyak tau (R5/official-align 0.0025)')
 a=ap.parse_args();setup(1234);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
-sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources);stats=feat_stats(D)
+sources=json.loads(Path(a.sources).read_text());D=load_dataset_w(sources, feat_context='IQL');stats=feat_stats(D)
 train_e=torch.nonzero(train_mask(D)).flatten();held_e=torch.nonzero(D['heldout']).flatten()
 ro_all=np.array([s!='demo' for s in D['source']]);sk_all=np.array(D['sku']);succ_all=D['success'].cpu().numpy()>0
 summary=dict(episodes=D['n'],train_episodes=len(train_e),heldout_episodes=len(held_e),train_all=TRAIN_ALL,demo_episodes=int((~ro_all).sum()),

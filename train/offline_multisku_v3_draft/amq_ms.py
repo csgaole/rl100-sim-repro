@@ -7,7 +7,7 @@ ap=argparse.ArgumentParser();ap.add_argument('--policies',required=True,help='js
 ap.add_argument('--transition',required=True);ap.add_argument('--sources',required=True);ap.add_argument('--out',required=True)
 ap.add_argument('--H',type=int,default=5);ap.add_argument('--states',type=int,default=1024)
 a=ap.parse_args();setup(31);out=Path(a.out)
-D=load_dataset_w(json.loads(Path(a.sources).read_text()))
+D=load_dataset_w(json.loads(Path(a.sources).read_text()), feat_context='AMQ')
 ck=torch.load(a.critic,map_location='cuda',weights_only=False);stats={k:v.cuda() for k,v in ck['stats'].items()}
 C=Critic(SD,ACT_DIM).cuda();C.load_state_dict(ck['critic']);C.eval().requires_grad_(False)
 tk=torch.load(a.transition,map_location='cuda',weights_only=False);T=TM().cuda();T.load_state_dict(tk['T']);T.eval().requires_grad_(False)

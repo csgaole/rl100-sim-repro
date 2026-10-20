@@ -3,7 +3,7 @@
 # IQL: Q1024+LN / V512, lr 1e-5, tau 0.0025, batch 256; GAMMA=0.999/chunk; Enc N/A (feats).
 # PPO: 3000 steps, batch 256, lr 1e-6, clip 0.1, grad_clip 0.5; Enc+Norm frozen; per-dim KL adaptive; anchor 6; pi_old refresh.
 # Fixed rules kept: IC +-5/2, DDIM sigma0, std[.0067,.1], sparse reward, IL data=demos+latest successes, order unchanged.
-# Dynamics 7/5 ensemble DEFERRED (still reference-only). Rollout ep RGB absent -> demo re-extract only (rollout feats refresh on next collect).
+# Dynamics 7/5 ensemble DEFERRED (still reference-only). P0: collect stores RGB; STEP7b full re-encode demos+rollouts; IQL fail-fast on feat stamp mismatch.
 # [offline_multisku_v3_draft 2026-10-20] copy of v2 pipeline_ms.py with Bill-approved changes ("按建议修改"):
 #   PPO: KL-adaptive lr on per-dim KL (no 0.02 early stop; safety stop at --kl-hard-mult x target), pi_old refresh every --old-refresh (50),
 #        anchor coef 6 to round-start on demo+success states, --adv-samples 4 + omega .7; lr r1 1e-6, r2+ INITIAL lr 3e-7 (adaptive thereafter).
@@ -338,11 +338,12 @@ def main():
         R['il_decision']=dict(rule='pooled200 not-worse',next_input='il' if ok else 'pre_il_fallback',il_pooled=R['il_gate'],pre_il_pooled=R['pol_after_pooled'],path=str(il_path) if ok else pa)
         if ok:
             # official/R5: Feature Extract after IL (demos only — rollout ep.npz has no RGB; next collect refreshes rollout feats)
-            log(f'round{r} STEP7b_REEXTRACT_DEMOS with IL policy {il_path}')
-            timed(f'r{r}_reextract',lambda:run([HERE/'demo_features_ms.py','--policy',il_path,'--force'],RD(r)/'reextract_demos.log',f'round{r}:reextract_demos'))
-            R['reextract_demos']=dict(policy=str(il_path),updated=cst());save_state()
+            # P0: full Feature Extract — demos AND all rollouts so far under IL encoder (requires RGB in ep.npz)
+            log(f'round{r} STEP7b_REENCODE_ALL with IL policy {il_path} sources={spm}')
+            timed(f'r{r}_reencode',lambda:run([HERE/'reencode_features_ms.py','--policy',il_path,'--sources',spm,'--force'],RD(r)/'reencode_all.log',f'round{r}:reencode_all'))
+            R['reencode_all']=dict(policy=str(il_path),sources=str(spm),updated=cst());save_state()
         else:
-            log(f'round{r} STEP7b_REEXTRACT skipped (IL not adopted)')
+            log(f'round{r} STEP7b_REENCODE skipped (IL not adopted)')
 
         log(f"round{r} STEP7_DONE IL pooled {R['il_gate']}/200 vs pre-IL {R['pol_after_pooled']}/200 -> next input {R['il_decision']['next_input']} ({R['il_decision']['path']})")
         S['current_policy']=R['il_decision']['path'];R['done']=True;R['finished']=cst();save_state();report()

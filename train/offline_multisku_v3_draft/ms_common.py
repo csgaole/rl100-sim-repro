@@ -1,3 +1,4 @@
+# [offline_multisku_v3_draft P0] full feature re-encode + feat_ckpt/feat_spec fail-fast.
 # [offline_multisku_v3_draft official-align 2026-10-20] Critic Q1024+LN / V512; GAMMA=0.999/chunk.
 # [offline_multisku_v3_draft 2026-10-20] copy of v2 ms_common.py; only change: SKU set configurable via MS_SKUS (default unchanged).
 # [offline_multisku_v1_draft 2026-10-19] Multi-SKU shared utilities. NEW file; merges (copies of) the base pipeline's
@@ -28,6 +29,7 @@ START_POLICY=Path(os.environ.get('MS_START_POLICY','/data02/kemove/rl100-sim-rep
 OUT=Path(os.environ['S2_OUT']) if 'S2_OUT' in os.environ else None
 DEMO_DIR=(OUT/'data') if OUT else None
 FEAT=1568;SKU_DIM=4;ACT_DIM=96;CHUNKS=60;GAMMA=.999  # v3-official: closer to RL-100/R5 0.999; still PER-CHUNK (not per-frame)
+FEAT_SPEC="rgb3x512+agent_pos28+sku_cond4"  # P0: identity of feature space (must match across demos+rollouts)
 STD_MIN=.0067;STD_MAX=float(os.environ.get('S2_STD_MAX','0.1'))
 SD=2*FEAT+1+SKU_DIM   # critic state dim: [z_{t-1}, z_t, clock, sku_cond]
 TRAIN_ALL=os.environ.get('MS_TRAIN_ALL','1')=='1'
@@ -100,10 +102,90 @@ def encode_frames(p,frames,sku_cond):
     """Inference/collection encode (no grad)."""
     return encode_frames_grad(p,frames,sku_cond)
 
+# ---------------- feature-space stamp (P0) ----------------
+
+def feat_meta_for_policy(policy_path):
+    """Canonical feature-space stamp written into demo_*.npz / ep_*.npz meta after encode/re-encode."""
+    path=str(Path(policy_path).resolve())
+    return dict(feat_ckpt=path, feat_ckpt_sha256=sha256(path), feat_spec=FEAT_SPEC, feat_dim=FEAT)
+
+def read_feat_stamp_demo(z):
+    """From a demo_*.npz (arrays or missing)."""
+    if "feat_ckpt" in z.files:
+        return dict(feat_ckpt=str(z["feat_ckpt"]), feat_ckpt_sha256=str(z["feat_ckpt_sha256"]),
+                    feat_spec=str(z["feat_spec"]), feat_dim=int(np.asarray(z["feat_dim"]).item()) if "feat_dim" in z.files else FEAT)
+    return None
+
+def read_feat_stamp_ep(meta, z=None):
+    """From ep meta dict (preferred) or legacy absent."""
+    if "feat_ckpt" in meta and "feat_spec" in meta:
+        return dict(feat_ckpt=str(meta["feat_ckpt"]), feat_ckpt_sha256=str(meta.get("feat_ckpt_sha256","")),
+                    feat_spec=str(meta["feat_spec"]), feat_dim=int(meta.get("feat_dim", FEAT)))
+    return None
+
+def stamp_key(st):
+    """Equality key: prefer sha256+spec so renamed paths still match; fall back to path+spec."""
+    if not st: return None
+    sha=st.get("feat_ckpt_sha256") or ""
+    if sha: return ("sha", sha, st["feat_spec"], int(st.get("feat_dim", FEAT)))
+    return ("path", st["feat_ckpt"], st["feat_spec"], int(st.get("feat_dim", FEAT)))
+
+def assert_uniform_feat_space(sources, context="IQL"):
+    """P0 fail-fast: every demo+rollout episode must share the same feat_ckpt/feat_spec.
+    Missing stamp (legacy collect without RGB re-encode) or demos-only re-extract => abort."""
+    stamps=[]; missing=[]; samples=[]
+    for kind,path in sources:
+        if kind=="demo":
+            for split in ["train","validation"]:
+                fp=Path(path)/f"demo_{split}.npz"
+                if not fp.exists(): continue
+                z=np.load(fp); st=read_feat_stamp_demo(z)
+                if st is None:
+                    missing.append(f"demo:{fp} (no feat_ckpt/feat_spec — run reencode_features_ms.py)")
+                else:
+                    stamps.append(stamp_key(st)); samples.append((f"demo:{split}", st, 1))
+        else:
+            files=sorted(glob.glob(str(Path(path)/"**"/"ep_*.npz"), recursive=True))
+            files=[f for f in files if ".tmp." not in f]
+            for f in files:
+                z=np.load(f); meta=json.loads(str(z["meta"])); st=read_feat_stamp_ep(meta, z)
+                if st is None:
+                    missing.append(f"rollout:{f} (no feat stamp; need RGB collect + reencode)")
+                else:
+                    stamps.append(stamp_key(st)); samples.append((f"ep:{meta.get('seed')}", st, 1))
+    if missing:
+        show=missing[:8]; more=f" ... +{len(missing)-8} more" if len(missing)>8 else ""
+        raise SystemExit(
+            f"[{context} FAIL-FAST] {len(missing)} episodes lack feat_ckpt/feat_spec: {show}{more}. "
+            f"If only demos were re-extracted after IL, re-run reencode_features_ms.py on demos AND all rollouts "
+            f"(requires RGB in ep.npz from collect)."
+        )
+    if not stamps:
+        raise SystemExit(f"[{context} FAIL-FAST] no episodes found in sources={sources}")
+    uniq=set(stamps)
+    if len(uniq)>1:
+        from collections import Counter
+        c=Counter(stamps)
+        detail=[]
+        for k,n in c.most_common():
+            ex=next(s for s in samples if stamp_key(s[1])==k)
+            detail.append(f"{n} eps key={k} eg={ex[0]} ckpt={ex[1]['feat_ckpt']}")
+        raise SystemExit(
+            f"[{context} FAIL-FAST] mixed feature spaces ({len(uniq)} distinct feat_ckpt/feat_spec). "
+            f"Typical cause: demos re-encoded with IL encoder but rollouts still old collect feats.\n" + "\n".join(detail)
+        )
+    st0=samples[0][1]
+    print(f"{context}_FEAT_OK", json.dumps(dict(
+        n_episodes=len(stamps), feat_ckpt=st0["feat_ckpt"],
+        feat_ckpt_sha256=st0["feat_ckpt_sha256"], feat_spec=st0["feat_spec"])), flush=True)
+    return st0
+
 # ---------------- dataset ----------------
-def load_dataset_w(sources,device='cuda'):
+def load_dataset_w(sources,device='cuda',require_feat_stamp=True,feat_context='dataset'):
     """sources: list of [kind,path]; 'demo' = dir with demo_{train,validation}.npz (demo_features_ms.py); any other kind =
-    rollout dir searched recursively for ep_<seed>.npz (batch_worker_ms.py). Success AND failure rollouts are all kept."""
+    rollout dir searched recursively for ep_<seed>.npz (batch_worker_ms.py). Success AND failure rollouts are all kept.
+    P0: by default require_feat_stamp=True -> assert_uniform_feat_space (fail-fast on missing/mixed)."""
+    feat_stamp=assert_uniform_feat_space(sources, context=feat_context) if require_feat_stamp else None
     F=[];A=[];succ=[];held=[];src=[];seeds=[];SK=[];SKN=[]
     for kind,path in sources:
         if kind=='demo':
@@ -122,7 +204,7 @@ def load_dataset_w(sources,device='cuda'):
     succ=torch.tensor(succ,device=device,dtype=torch.float32);held=torch.tensor(held,device=device)
     R=torch.zeros(len(succ),CHUNKS,device=device);R[:,-1]=succ   # sparse terminal success reward
     SKt=torch.tensor(np.stack(SK),device=device,dtype=torch.float32)
-    return dict(F=F,A=A,AJ=joint_flat(A),R=R,success=succ,heldout=held,source=src,seeds=seeds,SK=SKt,sku=SKN,n=len(succ))
+    return dict(F=F,A=A,AJ=joint_flat(A),R=R,success=succ,heldout=held,source=src,seeds=seeds,SK=SKt,sku=SKN,n=len(succ),feat_stamp=feat_stamp)
 def train_mask(D):
     """MS_TRAIN_ALL=1: every episode trains (demos + all rollouts); else base behaviour (exclude held-out subset)."""
     return torch.ones_like(D['heldout']) if TRAIN_ALL else ~D['heldout']

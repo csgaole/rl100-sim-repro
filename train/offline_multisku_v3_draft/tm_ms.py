@@ -13,7 +13,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('--sources',required=True);ap.add_argument('--critic',required=True);ap.add_argument('--out',required=True)
     ap.add_argument('--steps',type=int,default=20000);ap.add_argument('--batch',type=int,default=4096);ap.add_argument('--lr',type=float,default=3e-4);ap.add_argument('--eval-every',type=int,default=2000)
     a=ap.parse_args();setup(77);out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
-    D=load_dataset_w(json.loads(Path(a.sources).read_text()))
+    D=load_dataset_w(json.loads(Path(a.sources).read_text()), feat_context='TM')
     stats={k:v.cuda() for k,v in torch.load(a.critic,map_location='cuda',weights_only=False)['stats'].items()}  # same normalization as critic
     T=TM().cuda();opt=torch.optim.AdamW(T.parameters(),lr=a.lr,weight_decay=1e-5)
     nz=lambda z:(z-stats['mu'])/stats['sd']

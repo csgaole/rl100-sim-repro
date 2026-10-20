@@ -22,6 +22,7 @@ for split in ['train','validation']:
         if e%50==0:print('DEMO',split,e,n,flush=True)
     with torch.no_grad():A=p.normalizer['action'].normalize(torch.from_numpy(action[:n]).cuda()).cpu().numpy().astype(np.float32)
     tmp=OUT/'data'/f'demo_{split}.tmp.npz'
-    np.savez(tmp,feats=F,actions=A,success=np.ones(n,bool),ids=np.array(ids[:n]),sku=np.array(names[:n]),sku_cond=sk[:n].astype(np.float32))
+    fm=feat_meta_for_policy(a.policy)
+    np.savez(tmp,feats=F,actions=A,success=np.ones(n,bool),ids=np.array(ids[:n]),sku=np.array(names[:n]),sku_cond=sk[:n].astype(np.float32),feat_ckpt=np.array(fm['feat_ckpt']),feat_ckpt_sha256=np.array(fm['feat_ckpt_sha256']),feat_spec=np.array(fm['feat_spec']),feat_dim=np.array(fm['feat_dim']))
     tmp.replace(OUT/'data'/f'demo_{split}.npz');print('DEMO_DONE',split,n,F.shape,dict(Counter(names[:n])),flush=True)
-write_json(OUT/'data'/'demo_features.json',dict(policy=a.policy,policy_sha256=sha256(a.policy),cache=a.cache,feat_dim=FEAT,updated=cst()))
+fm2=feat_meta_for_policy(a.policy); write_json(OUT/'data'/'demo_features.json', {**fm2, 'policy': a.policy, 'policy_sha256': sha256(a.policy), 'cache': a.cache, 'updated': cst()})
