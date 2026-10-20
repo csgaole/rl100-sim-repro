@@ -91,8 +91,8 @@ def cond_for(eidx,t):
 def batch_loss(eidx):
     eidx=eidx.cuda().long();B=len(eidx);t=torch.randint(0,CHUNKS,(B,),device='cuda')
     cond=cond_for(eidx,t)
-    noise=torch.randn_like(A[eidx]);ts=torch.randint(0,Ttrain,(B,),device='cuda').long()
-    xt=sc.add_noise(A[eidx],noise,ts);pred=p.model(xt,ts,global_cond=cond)
+    x0=A[eidx,t];noise=torch.randn_like(x0);ts=torch.randint(0,Ttrain,(B,),device='cuda').long()
+    xt=sc.add_noise(x0,noise,ts);pred=p.model(sample=xt,timestep=ts,local_cond=None,global_cond=cond)
     return Fnn.mse_loss(pred,noise)
 
 ema_m={k:v.detach().clone() for k,v in p.model.state_dict().items()} if a.ema>0 else None
