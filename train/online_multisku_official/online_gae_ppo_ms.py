@@ -8,7 +8,7 @@
 #   (5) linear lr decay; save lr.txt each round (restore on --continue-run)
 #   (6) demo-mix closed-loop gate vs start-ckpt measured score (488) + log vs BC 485; rollback if worse than start
 #   (7) log V loss, explained variance, approx_kl, clip_frac, lr_actor/lr_critic, rollout success
-# V initialized fresh (is_load_value=false). Reuses offline env/rollout/collect (batch_worker_ms) + ms_common sampler.
+# V initialized fresh unless --load-value given (preserve critic across relaunch). Reuses offline env/rollout/collect (batch_worker_ms) + ms_common sampler.
 """Minimal online GAE-PPO launcher (official-aligned)."""
 from __future__ import annotations
 import argparse, json, math, os, subprocess, sys, threading, time
@@ -82,6 +82,10 @@ ap.add_argument("--bc-baseline", type=int, default=BC_POOLED_485)
 ap.add_argument("--no-gate", action="store_true")
 ap.add_argument("--smoke", action="store_true")
 ap.add_argument("--continue-run", action="store_true")
+ap.add_argument("--load-value", default="",
+                help="warm-start critic from value.pt (preserves trained V across relaunch; actor still from --start)")
+ap.add_argument("--load-reward-scaling", default="",
+                help="optional reward_scaling.json to pair with --load-value")
 ap.add_argument("--fix-encoder", action="store_true", default=True,
                 help="freeze encoder (default True for feature-buffer minimal path; feats from collect)")
 a = ap.parse_args()
@@ -567,7 +571,9 @@ def main():
         S2_FIX_FINAL=1, S2_FLOOR_FINAL=0,
         no_kl_anchor=True, no_omega=True, no_iql_advantage=True,
         no_retry_until_success=True, failures_enter_buffer=True,
-        is_load_value=False, use_adv_norm=True, use_reward_scaling=True, use_lr_decay=True,
+        is_load_value=bool(a.load_value), load_value_path=a.load_value or None,
+        load_reward_scaling_path=a.load_reward_scaling or None,
+        use_adv_norm=True, use_reward_scaling=True, use_lr_decay=True,
         fix_encoder=bool(a.fix_encoder), K_epochs=a.k_epochs,
         lr_a=a.lr_a, lr_c=a.lr_c, clip=a.clip, gamma=a.gamma, lamda=a.lamda,
         max_train_steps=a.max_train_steps, eps_per_round=a.eps, smoke=SM,
@@ -585,11 +591,21 @@ def main():
         p.normalizer.requires_grad_(False)
     model = p.model
     V = mlp(SD, 1, 512, 3, layernorm=False).to(device)
+    if a.load_value:
+        vp = Path(a.load_value)
+        assert vp.exists(), f"--load-value missing: {vp}"
+        V.load_state_dict(torch.load(vp, map_location=device, weights_only=False))
+        log(f"LOADED critic from {vp}")
     opt_a = torch.optim.Adam(model.parameters(), lr=a.lr_a, eps=1e-5)
     opt_c = torch.optim.Adam(V.parameters(), lr=a.lr_c, eps=1e-5)
     lr_a, lr_c = a.lr_a, a.lr_c
     total_steps = 0
     reward_scaling = RewardScaling(a.gamma)
+    if a.load_reward_scaling:
+        rsp = Path(a.load_reward_scaling)
+        assert rsp.exists(), f"--load-reward-scaling missing: {rsp}"
+        reward_scaling.load_state_dict(json.loads(rsp.read_text()))
+        log(f"LOADED reward_scaling from {rsp}")
     best_policy = OUT / "best_policy.pt"
     best_score = a.gate_baseline
     current_policy_path = OUT / "current_policy.pt"
