@@ -154,8 +154,10 @@ def env_for(g: int) -> dict:
     e = dict(os.environ)
     e.update(
         CUDA_VISIBLE_DEVICES=str(g), MUJOCO_EGL_DEVICE_ID=str(g), MUJOCO_GL="egl",
-        OMP_NUM_THREADS="4", S2_OUT=str(OUT), S2_FIX_FINAL="1", S2_FLOOR_FINAL="0",
-        S2_STD_MAX="0.1", MS_SMOKE="1" if SM else "0", TMPDIR="/data02/kemove/tmp",
+        OMP_NUM_THREADS="4", S2_OUT=str(OUT),
+        S2_FIX_FINAL=os.environ.get("S2_FIX_FINAL", "1"),
+        S2_FLOOR_FINAL=os.environ.get("S2_FLOOR_FINAL", "0"),
+        S2_STD_MAX=os.environ.get("S2_STD_MAX", "0.1"), MS_SMOKE="1" if SM else "0", TMPDIR="/data02/kemove/tmp",
     )
     return e
 
@@ -567,8 +569,12 @@ def main():
         start_policy=str(a.start), start_sha256=start_sha,
         gate_baseline_start_pooled=a.gate_baseline, bc_baseline_pooled=a.bc_baseline,
         ic_pos_mm=a.ic_pos_mm, ic_yaw_deg=a.ic_yaw_deg,
-        sampler="s2_stdfix DDIM10 eta=1 std[0.0067,0.1] terminal_sigma=0",
-        S2_FIX_FINAL=1, S2_FLOOR_FINAL=0,
+        sampler=("s2_stdfix DDIM10 eta=1 std[0.0067,0.1] "
+                 + ("terminal_sigma=0" if os.environ.get("S2_FIX_FINAL","1")=="1"
+                    else "terminal_sigma=official_nonzero (prev clamped>=0)")),
+        S2_FIX_FINAL=int(os.environ.get("S2_FIX_FINAL", "1")),
+        S2_FLOOR_FINAL=int(os.environ.get("S2_FLOOR_FINAL", "0")),
+        terminal_sigma_mode=("bill_zero" if os.environ.get("S2_FIX_FINAL","1")=="1" else "official_nonzero"),
         no_kl_anchor=True, no_omega=True, no_iql_advantage=True,
         no_retry_until_success=True, failures_enter_buffer=True,
         is_load_value=bool(a.load_value), load_value_path=a.load_value or None,
