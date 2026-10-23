@@ -1,17 +1,40 @@
-data/demos/**/episodes/
-data/demos/**/*.zarr/
+# --- Training runs (never upload; 282G) ---
+runs/
+
+# --- Large binaries ignored by default ---
+*.pt
+*.pth
+*.ckpt
 *.h5
 *.zarr/
-*.pt
-*.ckpt
-*.pth
-runs/
-models/
+*.zarr
+
+# --- Curated follow-trainable LFS paths (un-ignore) ---
+# demos (sku09 H5 episodes + manifests)
+!data/
+!data/**
+!data/demos/
+!data/demos/**
+# pretrained weights
+!models/
+!models/pretrained/
+!models/pretrained/**
+# curated public checkpoints (hardlinks into top-level checkpoints/)
+!checkpoints/
+!checkpoints/**
+
+# --- Python / caches ---
 __pycache__/
-# Backups
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Backups ---
 *.bak*
 *.bak_*
-# Analysis artifacts (keep *.py scripts only)
+
+# --- Analysis artifacts (keep *.py scripts only) ---
 analysis/**/videos/
 analysis/**/*.mp4
 analysis/**/*.npz
@@ -19,3 +42,10 @@ analysis/**/*.tgz
 analysis/**/*keyframes*.png
 analysis/**/out_*.jsonl
 analysis/**/pos_*.jsonl
+analysis/**/run.log
+analysis/**/rescore_results.json
+analysis/**/summary.json
+analysis/**/bc/
+analysis/**/start/
+analysis/**/v2/
+analysis/**/REPORT.md

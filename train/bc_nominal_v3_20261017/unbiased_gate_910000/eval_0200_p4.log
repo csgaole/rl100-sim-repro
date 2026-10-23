@@ -1,0 +1,21 @@
+910080 success
+910081 success
+910082 success
+910083 success
+910084 success
+910085 success
+910086 success
+910087 success
+910088 success
+910089 success
+910090 success
+910091 success
+910092 success
+910093 success
+910094 success
+910095 success
+910096 success
+910097 success
+910098 success
+910099 success
+{"success_criteria_version": "flip_pose_no_drop_v2", "strict_successes": 20, "unsettled_successes": 0, "action_semantics": "absolute_joint_target_v1", "position_half_range_m": 0.005, "yaw_half_range_deg": 2.0, "sampler": "upstream", "successes": 20, "episodes": 20, "success_rate": 1.0, "wilson95": [0.838874841947188, 0.9999999999999999], "checkpoint_sha256": "c35a5ad03907f27c7c322d323244208004a3daf7532ef4464464f2200f56b2cc", "checkpoint_epoch": 200, "checkpoint_step": 5800, "validation_loss": 0.003384910265708136, "seed_start": 910080, "failure_counts": {"drop": 0, "wrong_face": 0, "below_height": 0, "incomplete": 0}, "device": "NVIDIA A100-SXM4-80GB"}

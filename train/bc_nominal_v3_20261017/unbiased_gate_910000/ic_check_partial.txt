@@ -1,0 +1,12 @@
+880000 gate rows 100 mismatch []
+910000 gate rows so far 25 mismatch []
+910000 dx_mm=2.2835 dy_mm=3.2952 yaw_deg=-0.1076
+910001 dx_mm=4.5496 dy_mm=-3.4124 yaw_deg=-1.5574
+910002 dx_mm=1.3852 dy_mm=-0.6417 yaw_deg=-0.4017
+910003 dx_mm=-4.8747 dy_mm=-2.3260 yaw_deg=0.0178
+910004 dx_mm=2.7987 dy_mm=-3.3361 yaw_deg=-0.0110
+910005 dx_mm=1.2597 dy_mm=-4.8521 yaw_deg=1.2498
+910006 dx_mm=1.4054 dy_mm=1.5343 yaw_deg=-1.8247
+910007 dx_mm=4.7438 dy_mm=-4.7541 yaw_deg=0.1125
+910008 dx_mm=3.3246 dy_mm=0.5121 yaw_deg=1.5353
+910009 dx_mm=4.8101 dy_mm=2.4126 yaw_deg=-0.2573

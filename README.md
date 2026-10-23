@@ -1,19 +1,39 @@
 # rl100-sim-repro
 
+> Public follow-trainable snapshot (prep 2026-10-23 Asia/Shanghai).
+> Requires **Git LFS** (`git lfs install` before clone/pull).
+> Full training `runs/` (hundreds of GB) are **not** in the public repo — only curated checkpoints under `checkpoints/`.
+
+## Follow-trainable contents
+
+- **Env & task**: `env/` (logistics-sorting-sim + SKU09 `task_success` / `flip_pose_no_drop_v2`)
+- **Training code**: `train/`, `third_party/`, `eval/`, analysis `*.py` scripts
+- **Demos**: `data/demos/sku09-original300/` (300 H5 episodes + manifest + splits + SCHEMA)
+- **Weights**: `models/pretrained/r3m_resnet18.pt` (R3M ResNet18)
+- **Curated checkpoints** (Git LFS):
+  - `checkpoints/online_best_495.pt`
+  - `checkpoints/offline_kl1_s250_488.pt`
+
+See `UPLOAD_PLAN.md` for include/exclude and size estimates (~3.17G (measured) total).
+
+---
+
 > 复制日期：2026-10-09（CST，UTC+8）
 
 ## 本仓库当前内容
 
-本仓库**目前只包含仿真环境 + 示教（demonstration / teleop / expert）数据**，用于后续 RL-100 三阶段（BC → offline RL → online RL）复现。
-**三阶段训练入口尚未接入，后续再加。** 本仓库内没有任何训练 run、模型权重（*.pt / *.ckpt）或 rollout 归档。
+本仓库为 **follow-trainable** 公开快照：含仿真环境/任务、SKU09 示教、R3M 预训练权重、以及 2 个精选 checkpoint（Git LFS）。
+**完整 `runs/` 训练树不上传**（本地可保留）。Adroit / Meta-World zarr 若未附带，见 `data/README.md` / `UPLOAD_PLAN.md`。
 
 ```
 env/logistics-sorting-sim/        SKU09 物流分拣仿真环境（独立拷贝，可安全修改）
 env/sku09-task-success/           SKU09 成功判据实现 task_success.py（参考拷贝）
 third_party/rl100/                RL-100 官方 env 相关代码（vendor 拷贝，6MB）
 data/demos/sku09-original300/     SKU09 300 条 H5 专家示教 + splits.json + manifest.jsonl + SCHEMA.md
-data/demos/adroit_door_medium.zarr                Adroit door 官方 demo
-data/demos/metaworld_peg_insert/demonstrations.zarr  Meta-World peg-insert 100 条 demo
+# (optional / may be absent) data/demos/adroit_door_medium.zarr
+# (optional / may be absent) data/demos/metaworld_peg_insert/demonstrations.zarr
+models/pretrained/r3m_resnet18.pt   R3M weights (Git LFS)
+checkpoints/*.pt                    curated online/offline ckpts (Git LFS)
 data/README.md                    数据清单（来源、数量、成功判据）
 ```
 
@@ -37,7 +57,7 @@ data/README.md                    数据清单（来源、数量、成功判据�
 
 注意：`data/demos/` 下的文件是对源文件的**硬链接**（rsync --link-dest，同在 /data02，节省空间）。
 请把示教数据视为**只读**；原地修改会同时改动源文件。如需修改，先 `cp` 出独立副本。
-（env/ 与 third_party/ 是独立拷贝，不是硬链接。）数据文件未纳入 git（见 .gitignore）。
+（env/ 与 third_party/ 是独立拷贝，不是硬链接。）示教 H5、R3M 与 curated checkpoints 经 Git LFS 纳入；完整 `runs/` 仍被 `.gitignore` 排除。
 
 根磁盘 `/` 已满（100%），所有内容必须放在 /data02 下。
 

@@ -1,0 +1,10 @@
+# Git LFS — follow-trainable large files for public rl100-sim-repro
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+*.ckpt filter=lfs diff=lfs merge=lfs -text
+*.h5 filter=lfs diff=lfs merge=lfs -text
+*.zarr filter=lfs diff=lfs merge=lfs -text
+*.zarr/** filter=lfs diff=lfs merge=lfs -text
+data/demos/**/episodes/** filter=lfs diff=lfs merge=lfs -text
+checkpoints/** filter=lfs diff=lfs merge=lfs -text
+models/pretrained/** filter=lfs diff=lfs merge=lfs -text
