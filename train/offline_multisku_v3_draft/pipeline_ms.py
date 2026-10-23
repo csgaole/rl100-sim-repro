@@ -101,12 +101,12 @@ def own_pids():
             if pp in mine and c not in mine:mine.add(c);grow=True
     return mine
 def free_gpus(min_free=None):
-    """GPUs in the allow-list, not excluded, with NO foreign compute, and >= min_free MiB free. Re-reads $S2_OUT/exclude_gpus_override.txt each call."""
+    """GPUs in the allow-list, not excluded, with NO foreign compute, and >= min_free MiB free. Re-reads $S2_OUT/exclude_gpus_override.txt each call; if present, REPLACES CLI --exclude-gpus (not union)."""
     min_free=a.min_free_mib if min_free is None else min_free
     excl=set(EXCL)
     ov=OUT/'exclude_gpus_override.txt'
     if ov.exists():
-        excl|={int(x) for x in ov.read_text().replace(',',' ').split() if x.strip().lstrip('-').isdigit()}
+        excl={int(x) for x in ov.read_text().replace(',',' ').split() if x.strip().lstrip('-').isdigit()}  # REPLACE CLI exclude when override present
     q=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,memory.free','--format=csv,noheader,nounits'],capture_output=True,text=True).stdout
     apps=subprocess.run(['nvidia-smi','--query-compute-apps=pid,gpu_uuid','--format=csv,noheader'],capture_output=True,text=True).stdout
     mine=own_pids();busy=set()

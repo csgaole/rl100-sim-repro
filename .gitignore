@@ -8,3 +8,14 @@ data/demos/**/*.zarr/
 runs/
 models/
 __pycache__/
+# Backups
+*.bak*
+*.bak_*
+# Analysis artifacts (keep *.py scripts only)
+analysis/**/videos/
+analysis/**/*.mp4
+analysis/**/*.npz
+analysis/**/*.tgz
+analysis/**/*keyframes*.png
+analysis/**/out_*.jsonl
+analysis/**/pos_*.jsonl

@@ -6,6 +6,8 @@ from ._physics import SortingEnv
 from .camera_center_wrist_v2 import configure
 
 SKU_INDEX = {"SKU02": 1, "SKU09": 4}
+# Additive (2026-10-18): 5 new carton SKUs for multi-SKU BC; scenes scene_sku10..14.xml
+SKU_INDEX.update({"SKU5A": 10, "SKU5B": 11, "SKU5C": 12, "SKU5D": 13, "SKU5E": 14})
 
 
 def task_state(env):
